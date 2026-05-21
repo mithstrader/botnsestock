@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NSE Options Signal Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0d1117;
+    --surface:  #161b22;
+    --border:   #30363d;
+    --text:     #e6edf3;
+    --muted:    #8b949e;
+    --call:     #3fb950;
+    --put:      #f85149;
+    --accent:   #58a6ff;
+    --warn:     #d29922;
+    --header:   #1f3864;
+  }
+
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; }
+
+  header {
+    background: var(--header);
+    padding: 16px 24px;
+    display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 100;
+  }
+  header h1 { font-size: 18px; font-weight: 700; letter-spacing: .5px; }
+  header h1 span { color: var(--accent); }
+  #last-updated { font-size: 12px; color: var(--muted); }
+
+  .container { max-width: 1400px; margin: 0 auto; padding: 20px 24px; }
+
+  /* ── Tabs ── */
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 20px; }
+  .tab-btn {
+    background: none; border: none; color: var(--muted); cursor: pointer;
+    padding: 10px 20px; font-size: 14px; border-bottom: 2px solid transparent;
+    transition: color .15s, border-color .15s;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-pane { display: none; }
+  .tab-pane.active { display: block; }
+
+  /* ── Cards ── */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px 18px;
+  }
+  .card .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; margin-bottom: 6px; }
+  .card .value { font-size: 28px; font-weight: 700; }
+  .card .sub   { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .card.call   .value { color: var(--call); }
+  .card.put    .value { color: var(--put); }
+  .card.accent .value { color: var(--accent); }
+  .card.warn   .value { color: var(--warn); }
+
+  /* ── Charts row ── */
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  @media (max-width: 800px) { .charts { grid-template-columns: 1fr; } }
+  .chart-box {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 18px;
+  }
+  .chart-box h3 { font-size: 13px; color: var(--muted); margin-bottom: 14px; }
+  .chart-box canvas { max-height: 240px; }
+
+  /* ── Table ── */
+  .table-wrap {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; overflow: hidden;
+  }
+  .table-toolbar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .table-toolbar input, .table-toolbar select {
+    background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px; padding: 6px 10px; font-size: 13px;
+    outline: none;
+  }
+  .table-toolbar input { flex: 1; min-width: 160px; }
+  .table-toolbar label { font-size: 12px; color: var(--muted); }
+  .tbl-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    background: var(--header); color: #fff; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .6px; padding: 10px 12px; white-space: nowrap; position: sticky; top: 0;
+  }
+  tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
+  tbody tr:hover { background: rgba(88,166,255,.06); }
+  tbody td { padding: 8px 12px; white-space: nowrap; font-size: 13px; }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-size: 11px; font-weight: 700; letter-spacing: .4px;
+  }
+  .badge.CALL { background: rgba(63,185,80,.18); color: var(--call); }
+  .badge.PUT  { background: rgba(248,81,73,.18);  color: var(--put); }
+  .badge.NEW  { background: rgba(210,153,34,.18); color: var(--warn); }
+  .score-high { color: var(--call); font-weight: 600; }
+  .score-mid  { color: var(--warn); font-weight: 600; }
+  .score-low  { color: var(--muted); }
+  .result-PENDING { color: var(--muted); }
+  .result-WIN     { color: var(--call); font-weight: 600; }
+  .result-LOSS    { color: var(--put);  font-weight: 600; }
+
+  /* ── Loading ── */
+  #loader {
+    position: fixed; inset: 0; background: var(--bg);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 16px; z-index: 999;
+  }
+  .spinner {
+    width: 40px; height: 40px; border: 3px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #loader p { color: var(--muted); font-size: 13px; }
+
+  /* ── Error ── */
+  .error-box {
+    background: rgba(248,81,73,.1); border: 1px solid var(--put);
+    border-radius: 8px; padding: 16px 20px; color: var(--put);
+    margin: 20px 0; font-size: 13px;
+  }
+
+  .empty { padding: 40px; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div id="loader">
+  <div class="spinner"></div>
+  <p>Loading NSE_Bot_Master.xlsx …</p>
+</div>
+
+<header>
+  <h1>NSE Options <span>Signal Dashboard</span></h1>
+  <span id="last-updated">—</span>
+</header>
+
+<div class="container">
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
+    <button class="tab-btn" onclick="switchTab('signals')">Signals</button>
+    <button class="tab-btn" onclick="switchTab('scans')">All Scans</button>
+    <button class="tab-btn" onclick="switchTab('summary')">Summary</button>
+  </div>
+
+  <!-- OVERVIEW TAB -->
+  <div id="tab-overview" class="tab-pane active">
+    <div class="cards" id="cards"></div>
+    <div class="charts">
+      <div class="chart-box">
+        <h3>DAILY SIGNALS — CALL vs PUT</h3>
+        <canvas id="chartDaily"></canvas>
+      </div>
+      <div class="chart-box">
+        <h3>SCORE DISTRIBUTION</h3>
+        <canvas id="chartScore"></canvas>
+      </div>
+    </div>
+    <div class="charts">
+      <div class="chart-box">
+        <h3>MARKET ACTIVITY OVER SCANS (TODAY)</h3>
+        <canvas id="chartActivity"></canvas>
+      </div>
+      <div class="chart-box">
+        <h3>TOP SIGNALLED STOCKS</h3>
+        <canvas id="chartTop"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- SIGNALS TAB -->
+  <div id="tab-signals" class="tab-pane">
+    <div class="table-wrap">
+      <div class="table-toolbar">
+        <input id="sig-search" type="text" placeholder="Search symbol, direction, session…" oninput="filterSignals()">
+        <label>Direction:
+          <select id="sig-dir" onchange="filterSignals()">
+            <option value="">All</option>
+            <option>CALL</option>
+            <option>PUT</option>
+          </select>
+        </label>
+        <label>Date:
+          <select id="sig-date" onchange="filterSignals()"><option value="">All dates</option></select>
+        </label>
+        <label>Result:
+          <select id="sig-result" onchange="filterSignals()">
+            <option value="">All</option>
+            <option>PENDING</option>
+            <option>WIN</option>
+            <option>LOSS</option>
+          </select>
+        </label>
+      </div>
+      <div class="tbl-scroll"><table id="sig-table"><thead></thead><tbody></tbody></table></div>
+    </div>
+  </div>
+
+  <!-- SCANS TAB -->
+  <div id="tab-scans" class="tab-pane">
+    <div class="table-wrap">
+      <div class="table-toolbar">
+        <input id="scan-search" type="text" placeholder="Search date, session, stocks alerted…" oninput="filterScans()">
+        <label>Date:
+          <select id="scan-date" onchange="filterScans()"><option value="">All dates</option></select>
+        </label>
+      </div>
+      <div class="tbl-scroll"><table id="scan-table"><thead></thead><tbody></tbody></table></div>
+    </div>
+  </div>
+
+  <!-- SUMMARY TAB -->
+  <div id="tab-summary" class="tab-pane">
+    <div class="table-wrap">
+      <div class="tbl-scroll"><table id="sum-table"><thead></thead><tbody></tbody></table></div>
+    </div>
+  </div>
+
+</div><!-- /container -->
+
+<script>
+// ── Data stores ──────────────────────────────────────────────────
+let sigRows  = [], scanRows = [], sumRows = [];
+let sigAll   = [], scanAll  = [];
+let charts   = {};
+
+// ── Tab switch ───────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach((b,i) => {
+    const names = ['overview','signals','scans','summary'];
+    b.classList.toggle('active', names[i] === name);
+  });
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');
+}
+
+// ── Load Excel ───────────────────────────────────────────────────
+async function loadExcel() {
+  const paths = ['./logs/NSE_Bot_Master.xlsx', 'logs/NSE_Bot_Master.xlsx'];
+  let data = null;
+  for (const p of paths) {
+    try {
+      const res = await fetch(p);
+      if (!res.ok) continue;
+      data = await res.arrayBuffer();
+      break;
+    } catch(e) {}
+  }
+  if (!data) throw new Error('Could not fetch logs/NSE_Bot_Master.xlsx — make sure the file is in the repo.');
+
+  const wb = XLSX.read(data, { type: 'array', cellDates: true });
+
+  sigRows  = sheetToObjects(wb, 'Signals');
+  scanRows = sheetToObjects(wb, 'All Scans');
+  sumRows  = sheetToObjects(wb, 'Summary');
+
+  sigAll  = [...sigRows];
+  scanAll = [...scanRows];
+
+  document.getElementById('last-updated').textContent =
+    'Updated ' + new Date().toLocaleString('en-IN', { timeZone:'Asia/Kolkata' }) + ' IST';
+}
+
+function sheetToObjects(wb, name) {
+  const ws = wb.Sheets[name];
+  if (!ws) return [];
+  return XLSX.utils.sheet_to_json(ws, { defval: '' });
+}
+
+// ── Render overview ──────────────────────────────────────────────
+function renderOverview() {
+  const validSig = sigRows.filter(r => r['Symbol'] && r['Direction']);
+  const calls    = validSig.filter(r => r['Direction'] === 'CALL').length;
+  const puts     = validSig.filter(r => r['Direction'] === 'PUT').length;
+  const scores   = validSig.map(r => +r['Score /100']).filter(s => s > 0);
+  const best     = scores.length ? Math.max(...scores) : 0;
+  const today    = new Date().toLocaleDateString('en-CA', { timeZone:'Asia/Kolkata' });
+  const todaySig = validSig.filter(r => String(r['Date']).startsWith(today));
+
+  document.getElementById('cards').innerHTML = `
+    <div class="card accent"><div class="label">Total Signals</div><div class="value">${validSig.length}</div><div class="sub">all time</div></div>
+    <div class="card call"><div class="label">CALLs</div><div class="value">${calls}</div><div class="sub">${pct(calls, validSig.length)}% of signals</div></div>
+    <div class="card put"><div class="label">PUTs</div><div class="value">${puts}</div><div class="sub">${pct(puts, validSig.length)}% of signals</div></div>
+    <div class="card warn"><div class="label">Best Score</div><div class="value">${best}</div><div class="sub">/100</div></div>
+    <div class="card accent"><div class="label">Today's Signals</div><div class="value">${todaySig.length}</div><div class="sub">${today}</div></div>
+    <div class="card"><div class="label">Total Scans</div><div class="value">${scanRows.length}</div><div class="sub">all sessions</div></div>
+  `;
+
+  buildDailyChart(validSig);
+  buildScoreChart(scores);
+  buildActivityChart();
+  buildTopChart(validSig);
+}
+
+function pct(n, total) { return total ? Math.round(n/total*100) : 0; }
+
+function buildDailyChart(rows) {
+  const byDate = {};
+  rows.forEach(r => {
+    const d = String(r['Date']).slice(0,10);
+    if (!d || d === 'undefined') return;
+    byDate[d] = byDate[d] || { CALL:0, PUT:0 };
+    byDate[d][r['Direction']]++;
+  });
+  const dates = Object.keys(byDate).sort().slice(-20);
+  destroyChart('chartDaily');
+  charts.daily = new Chart(document.getElementById('chartDaily'), {
+    type: 'bar',
+    data: {
+      labels: dates,
+      datasets: [
+        { label:'CALL', data: dates.map(d=>byDate[d].CALL||0), backgroundColor:'rgba(63,185,80,.7)' },
+        { label:'PUT',  data: dates.map(d=>byDate[d].PUT||0),  backgroundColor:'rgba(248,81,73,.7)' }
+      ]
+    },
+    options: chartOpts({ stacked: true })
+  });
+}
+
+function buildScoreChart(scores) {
+  const buckets = [40,50,60,70,80,90,101];
+  const labels  = ['40-49','50-59','60-69','70-79','80-89','90+'];
+  const counts  = new Array(6).fill(0);
+  scores.forEach(s => {
+    const i = buckets.findIndex(b => s < b) - 1;
+    if (i >= 0) counts[i]++;
+  });
+  destroyChart('chartScore');
+  charts.score = new Chart(document.getElementById('chartScore'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{ label:'Signals', data: counts, backgroundColor:'rgba(88,166,255,.7)' }]
+    },
+    options: chartOpts({})
+  });
+}
+
+function buildActivityChart() {
+  const today = new Date().toLocaleDateString('en-CA', { timeZone:'Asia/Kolkata' });
+  const todayScans = scanRows.filter(r => String(r['Date']).startsWith(today));
+  const labels = todayScans.map(r => String(r['Time']).slice(0,5));
+  const data   = todayScans.map(r => +r['Activity /100'] || 0);
+  destroyChart('chartActivity');
+  charts.activity = new Chart(document.getElementById('chartActivity'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{ label:'Activity', data, borderColor:'rgba(210,153,34,.9)',
+        backgroundColor:'rgba(210,153,34,.15)', fill:true, tension:.3, pointRadius:2 }]
+    },
+    options: chartOpts({ yMax: 100 })
+  });
+}
+
+function buildTopChart(rows) {
+  const cnt = {};
+  rows.forEach(r => { if (r['Symbol']) cnt[r['Symbol']] = (cnt[r['Symbol']]||0)+1; });
+  const top = Object.entries(cnt).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  destroyChart('chartTop');
+  charts.top = new Chart(document.getElementById('chartTop'), {
+    type: 'bar',
+    data: {
+      labels: top.map(x=>x[0]),
+      datasets: [{ label:'Signals', data: top.map(x=>x[1]), backgroundColor:'rgba(88,166,255,.7)' }]
+    },
+    options: chartOpts({ indexAxis: 'y' })
+  });
+}
+
+function chartOpts({ stacked=false, yMax, indexAxis }={}) {
+  return {
+    responsive: true, maintainAspectRatio: true,
+    indexAxis: indexAxis || 'x',
+    plugins: { legend: { labels: { color:'#8b949e', font:{ size:11 } } } },
+    scales: {
+      x: { stacked, ticks:{ color:'#8b949e', font:{size:10} }, grid:{ color:'rgba(48,54,61,.8)' } },
+      y: { stacked, max: yMax, ticks:{ color:'#8b949e', font:{size:10} }, grid:{ color:'rgba(48,54,61,.8)' } }
+    }
+  };
+}
+
+function destroyChart(id) { if (charts[id]) { charts[id].destroy(); delete charts[id]; } }
+
+// ── Render Signals table ─────────────────────────────────────────
+function renderSignals() {
+  const headers = ['Date','Time','Symbol','Direction','LTP (Rs)','Day Chg %',
+    'Vol Surge %','OI Build %','Score /100','Buildup','Signal Type','Tag',
+    'Suggested Strike','SL (Rs)','Target (Rs)','Session','Market Activity',
+    'Entry Premium','Exit Premium','P&L (Rs)','Result','Notes'];
+
+  buildTableHead('sig-table', headers);
+
+  // Populate date filter
+  const sel = document.getElementById('sig-date');
+  const dates = [...new Set(sigAll.map(r=>String(r['Date']).slice(0,10)).filter(Boolean))].sort().reverse();
+  sel.innerHTML = '<option value="">All dates</option>' + dates.map(d=>`<option>${d}</option>`).join('');
+
+  renderSignalRows(sigAll);
+}
+
+function filterSignals() {
+  const q   = document.getElementById('sig-search').value.toLowerCase();
+  const dir = document.getElementById('sig-dir').value;
+  const dt  = document.getElementById('sig-date').value;
+  const res = document.getElementById('sig-result').value;
+  const filtered = sigAll.filter(r => {
+    if (dir && r['Direction'] !== dir) return false;
+    if (dt  && !String(r['Date']).startsWith(dt)) return false;
+    if (res && r['Result'] !== res) return false;
+    if (q) {
+      const blob = Object.values(r).join(' ').toLowerCase();
+      if (!blob.includes(q)) return false;
+    }
+    return true;
+  });
+  renderSignalRows(filtered);
+}
+
+function renderSignalRows(rows) {
+  const validRows = rows.filter(r => r['Symbol'] && r['Direction']);
+  const tbody = document.querySelector('#sig-table tbody');
+  if (!validRows.length) { tbody.innerHTML = '<tr><td colspan="22" class="empty">No signals match</td></tr>'; return; }
+  tbody.innerHTML = validRows.slice().reverse().map(r => {
+    const dir   = r['Direction'];
+    const score = +r['Score /100'] || 0;
+    const sCls  = score >= 70 ? 'score-high' : score >= 50 ? 'score-mid' : 'score-low';
+    const rCls  = 'result-' + (r['Result'] || 'PENDING');
+    const chg   = +r['Day Chg %'] || 0;
+    const chgCls = chg > 0 ? 'style="color:var(--call)"' : chg < 0 ? 'style="color:var(--put)"' : '';
+    return `<tr>
+      <td>${r['Date']||''}</td>
+      <td>${r['Time']||''}</td>
+      <td><strong>${r['Symbol']||''}</strong></td>
+      <td><span class="badge ${dir}">${dir}</span></td>
+      <td>${r['LTP (Rs)']||''}</td>
+      <td ${chgCls}>${r['Day Chg %']||''}</td>
+      <td>${r['Vol Surge %']||''}</td>
+      <td>${r['OI Build %']||''}</td>
+      <td class="${sCls}">${score||''}</td>
+      <td>${r['Buildup']||''}</td>
+      <td>${r['Signal Type']||''}</td>
+      <td><span class="badge ${r['Tag']||''}">${r['Tag']||''}</span></td>
+      <td>${r['Suggested Strike']||''}</td>
+      <td>${r['SL (Rs)']||''}</td>
+      <td>${r['Target (Rs)']||''}</td>
+      <td>${r['Session']||''}</td>
+      <td>${r['Market Activity']||''}</td>
+      <td>${r['Entry Premium']||''}</td>
+      <td>${r['Exit Premium']||''}</td>
+      <td>${r['P&L (Rs)']||''}</td>
+      <td class="${rCls}">${r['Result']||''}</td>
+      <td>${r['Notes']||''}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Render Scans table ───────────────────────────────────────────
+function renderScans() {
+  const headers = ['Date','Time','Scan #','Total Stocks','Activity /100','Session','Signals Sent','Stocks Alerted'];
+  buildTableHead('scan-table', headers);
+
+  const sel = document.getElementById('scan-date');
+  const dates = [...new Set(scanAll.map(r=>String(r['Date']).slice(0,10)).filter(Boolean))].sort().reverse();
+  sel.innerHTML = '<option value="">All dates</option>' + dates.map(d=>`<option>${d}</option>`).join('');
+
+  renderScanRows(scanAll);
+}
+
+function filterScans() {
+  const q  = document.getElementById('scan-search').value.toLowerCase();
+  const dt = document.getElementById('scan-date').value;
+  const filtered = scanAll.filter(r => {
+    if (dt && !String(r['Date']).startsWith(dt)) return false;
+    if (q) { const blob = Object.values(r).join(' ').toLowerCase(); if (!blob.includes(q)) return false; }
+    return true;
+  });
+  renderScanRows(filtered);
+}
+
+function renderScanRows(rows) {
+  const tbody = document.querySelector('#scan-table tbody');
+  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="8" class="empty">No scans yet</td></tr>'; return; }
+  tbody.innerHTML = rows.slice().reverse().map(r => {
+    const act = +r['Activity /100'] || 0;
+    const aCls = act >= 60 ? 'score-high' : act >= 30 ? 'score-mid' : 'score-low';
+    const sent = +r['Signals Sent'] || 0;
+    return `<tr>
+      <td>${r['Date']||''}</td>
+      <td>${r['Time']||''}</td>
+      <td>${r['Scan #']||''}</td>
+      <td>${r['Total Stocks']||''}</td>
+      <td class="${aCls}">${act}</td>
+      <td>${r['Session']||''}</td>
+      <td ${sent>0?'style="color:var(--call);font-weight:600"':''}>${sent}</td>
+      <td style="max-width:280px;white-space:normal">${r['Stocks Alerted']||'—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Render Summary table ─────────────────────────────────────────
+function renderSummary() {
+  const headers = ['Date','Total Scans','Stocks w/ Signal','CALLs','PUTs','Avg Score','Best Score','Best Stock'];
+  buildTableHead('sum-table', headers);
+  const tbody = document.querySelector('#sum-table tbody');
+  const valid = sumRows.filter(r => r['Date']);
+  if (!valid.length) { tbody.innerHTML = '<tr><td colspan="8" class="empty">No summary data yet</td></tr>'; return; }
+  tbody.innerHTML = valid.slice().reverse().map(r => {
+    const best = +r['Best Score'] || 0;
+    return `<tr>
+      <td><strong>${r['Date']||''}</strong></td>
+      <td>${r['Total Scans']||''}</td>
+      <td>${r['Stocks w/ Signal']||''}</td>
+      <td style="color:var(--call);font-weight:600">${r['CALLs']||0}</td>
+      <td style="color:var(--put);font-weight:600">${r['PUTs']||0}</td>
+      <td>${r['Avg Score']||''}</td>
+      <td class="${best>=70?'score-high':best>=50?'score-mid':'score-low'}">${best||''}</td>
+      <td><strong>${r['Best Stock']||'—'}</strong></td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Helpers ──────────────────────────────────────────────────────
+function buildTableHead(id, headers) {
+  document.querySelector('#'+id+' thead').innerHTML =
+    '<tr>' + headers.map(h=>`<th>${h}</th>`).join('') + '</tr>';
+}
+
+// ── Boot ─────────────────────────────────────────────────────────
+(async () => {
+  try {
+    await loadExcel();
+    renderOverview();
+    renderSignals();
+    renderScans();
+    renderSummary();
+  } catch(e) {
+    document.querySelector('.container').insertAdjacentHTML('afterbegin',
+      `<div class="error-box">⚠ ${e.message}</div>`);
+  } finally {
+    document.getElementById('loader').style.display = 'none';
+  }
+})();
+</script>
+</body>
+</html>
