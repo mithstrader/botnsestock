@@ -1,0 +1,45 @@
+name: NSE Options Bot
+
+on:
+  # Runs Mon–Fri at 9:10 AM IST = 03:40 UTC
+  schedule:
+    - cron: "40 3 * * 1-5"
+
+  # Also lets you start it manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 420   # 7 h — covers the full 6h15m market session
+
+    env:
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      CHAT_ID: ${{ secrets.CHAT_ID }}
+      CI: "true"            # disables desktop notifications inside the bot
+      EXCEL_FOLDER: "./logs"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run NSE bot
+        run: python nse_options_bot_stock_cookies_xl_ex_enhanced.py
+
+      - name: Upload Excel logs
+        if: always()   # upload even if the bot exits with an error
+        uses: actions/upload-artifact@v4
+        with:
+          name: nse-logs-${{ github.run_id }}
+          path: logs/
+          if-no-files-found: ignore
+          retention-days: 30
