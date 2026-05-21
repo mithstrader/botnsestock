@@ -8,6 +8,9 @@ on:
   # Also lets you start it manually from the Actions tab
   workflow_dispatch:
 
+permissions:
+  contents: write   # needed to push the Excel file back to the repo
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -22,6 +25,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -35,11 +40,12 @@ jobs:
       - name: Run NSE bot
         run: python nse_options_bot_stock_cookies_xl_ex_enhanced.py
 
-      - name: Upload Excel logs
-        if: always()   # upload even if the bot exits with an error
-        uses: actions/upload-artifact@v4
-        with:
-          name: nse-logs-${{ github.run_id }}
-          path: logs/
-          if-no-files-found: ignore
-          retention-days: 30
+      - name: Commit and push Excel logs to repo
+        if: always()
+        run: |
+          git config user.name "NSE Bot"
+          git config user.email "nsebot@github-actions"
+          git add logs/*.xlsx 2>/dev/null || true
+          git diff --cached --quiet && echo "No new Excel data to commit" && exit 0
+          git commit -m "logs: update NSE signals $(date +'%Y-%m-%d')"
+          git push
