@@ -107,6 +107,18 @@ MARKET_OPEN_H,  MARKET_OPEN_M  = 9,  15   # 9:15 AM IST
 MARKET_CLOSE_H, MARKET_CLOSE_M = 15, 30   # 3:30 PM IST
 QUIET_SCORE_BOOST            = 20.0   # Extra score needed in quiet market
 
+# ─── India VIX thresholds ──────────────────────────────────────────
+VIX_CALM_MAX        = 12.0   # VIX < 12  → calm, ease score by 5
+VIX_NORMAL_MAX      = 20.0   # VIX 12-20 → normal
+VIX_HIGH_BOOST      = 15.0   # VIX > 20  → need 15 extra score
+VIX_EXTREME         = 25.0   # VIX > 25  → block all intraday signals
+
+# ─── Nifty PCR thresholds ─────────────────────────────────────────
+PCR_VERY_BULL       = 1.5    # PCR > 1.5 → +15 bonus for CALL
+PCR_BULL            = 1.2    # PCR > 1.2 → +8  bonus for CALL
+PCR_BEAR            = 0.8    # PCR < 0.8 → +8  bonus for PUT
+PCR_VERY_BEAR       = 0.6    # PCR < 0.6 → +15 bonus for PUT
+
 # ═══════════════════════════════════════════════════════════════════
 #  DESKTOP NOTIFICATION ENGINE  (auto-detects your OS)
 # ═══════════════════════════════════════════════════════════════════
@@ -307,7 +319,8 @@ _SIG_HEADERS = [
     "Day Chg %", "Vol Surge %", "OI Build %", "Score /100",
     "Buildup", "Signal Type", "Tag", "Suggested Strike", "SL (Rs)", "Target (Rs)",
     "Session", "Market Activity",
-    "Entry Premium", "Exit Premium", "P&L (Rs)", "Result", "Notes"
+    "Entry Premium", "Exit Premium", "P&L (Rs)", "Result", "Notes",
+    "India VIX", "Nifty PCR"
 ]
 _SCAN_HEADERS = [
     "Date", "Time", "Scan #", "Total Stocks",
@@ -351,7 +364,20 @@ def _load_or_create_wb():
     os.makedirs(EXCEL_FOLDER, exist_ok=True)
 
     if os.path.exists(EXCEL_FILE):
-        return openpyxl.load_workbook(EXCEL_FILE)
+        wb = openpyxl.load_workbook(EXCEL_FILE)
+        # ── Migrate: add VIX / PCR header columns if not present ──
+        if "Signals" in wb.sheetnames:
+            ws_sig = wb["Signals"]
+            last_col = ws_sig.max_column
+            headers_present = [ws_sig.cell(1, c).value for c in range(1, last_col + 1)]
+            if "India VIX" not in headers_present:
+                for col, title in [(last_col + 1, "India VIX"),
+                                   (last_col + 2, "Nifty PCR")]:
+                    _header_style(ws_sig.cell(1, col), title)
+                    ws_sig.column_dimensions[get_column_letter(col)].width = 10
+                wb.save(EXCEL_FILE)
+                print("[EXCEL] Migrated: added India VIX + Nifty PCR columns.")
+        return wb
 
     wb  = openpyxl.Workbook()
 
@@ -359,12 +385,14 @@ def _load_or_create_wb():
     ws1 = wb.active
     ws1.title = "Signals"
     ws1.row_dimensions[1].height = 32
-    widths = [12, 10, 14, 10, 10, 10, 12, 10, 10, 16, 12, 14, 18, 10, 12, 18, 14, 14, 12, 10, 20]
+    widths = [12, 10, 14, 10, 10, 10, 12, 10, 10, 16, 12, 14, 18, 10, 12, 18, 14, 14, 12, 10, 20, 10, 10]
     for col, (h, w) in enumerate(zip(_SIG_HEADERS, widths), 1):
         _header_style(ws1.cell(row=1, column=col), h)
         ws1.column_dimensions[get_column_letter(col)].width = w
     ws1.freeze_panes = "A2"
     ws1.auto_filter.ref = f"A1:{get_column_letter(len(_SIG_HEADERS))}1"
+
+    # ── Migrate existing workbooks: add VIX/PCR headers if missing ──
 
     # ── Sheet 2: All Scans ────────────────────────────────────────
     ws2 = wb.create_sheet("All Scans")
@@ -423,6 +451,8 @@ def excel_log_signals(picks, activity, session, expiry):
                 MAX_RISK_PER_TRADE, MAX_RISK_PER_TRADE * 2,
                 session, round(activity, 1),
                 "", "", "", "PENDING", "",
+                _market_context.get("vix") or "",
+                _market_context.get("pcr") or "",
             ]
 
             r = ws.max_row + 1
@@ -527,6 +557,14 @@ state = {
     'alerts_sent'     : 0,
     'scan_count'      : 0,
     'date'            : None,
+}
+
+
+# ── Market context (VIX + PCR) — refreshed every 15 min ─────────
+_market_context = {
+    "vix":         None,   # India VIX float
+    "pcr":         None,   # Nifty PCR float
+    "last_refresh": None,  # datetime of last fetch
 }
 
 
@@ -746,6 +784,20 @@ def filter_signals(stocks):
     if remaining <= 0:
         return []
 
+    # ── VIX override ─────────────────────────────────────────────
+    vix_delta, vix_block = get_vix_threshold_delta()
+    if vix_block:
+        vix = _market_context.get("vix", 0)
+        print(f"[VIX] India VIX {vix:.1f} > {VIX_EXTREME} — all signals blocked.")
+        send_telegram(
+            f"⚠️ *VIX ALERT*\n"
+            f"India VIX is extremely high at *{vix:.1f}*\n"
+            f"All intraday signals blocked for safety.\n"
+            f"_Options premiums are inflated — risk is very high._"
+        )
+        return []
+    threshold += vix_delta
+
     calls, puts = [], []
 
     for s in stocks:
@@ -766,6 +818,12 @@ def filter_signals(stocks):
             continue
 
         s['score']      = compute_score(s)
+
+        # ── PCR bonus: confirm or penalise based on market sentiment
+        pcr_bonus       = get_pcr_bonus(s['direction'])
+        s['score']      = min(round(s['score'] + pcr_bonus, 1), 100)
+        s['pcr_bonus']  = pcr_bonus
+
         prev_score      = state['last_scores'].get(sym, 0)
         s['is_new']     = sym not in state['alerted_today']
         s['score_jump'] = round(s['score'] - prev_score, 1)
@@ -807,6 +865,8 @@ def signal_message(picks, expiry, activity, updated_at):
         f"📅 Expiry: `{expiry}`\n"
         f"📊 Market: `{bar}` {activity:.0f}/100\n"
         f"🕰 Session: {session}\n"
+        f"🌡 VIX: `{vix_label()}`\n"
+        f"📈 PCR: `{pcr_label()}`\n"
         f"`{line}`\n\n"
     )
 
@@ -815,6 +875,9 @@ def signal_message(picks, expiry, activity, updated_at):
         sign = "+" if s['day_change'] > 0 else ""
         tag  = "🆕 NEW" if s['is_new'] else f"📈 +{s['score_jump']:.0f} pts"
 
+        pcr_b = s.get("pcr_bonus", 0)
+        pcr_b_str = (f"   PCR Boost: `{pcr_b:+.0f} pts` ({'↑ confirms' if pcr_b > 0 else '↓ conflicts'})\n"
+                     if pcr_b != 0 else "")
         msg += (
             f"{icon} *{s['symbol']} — {s['direction']}*  {tag}\n"
             f"   LTP      : Rs {s['ltp']:,.1f}\n"
@@ -822,7 +885,8 @@ def signal_message(picks, expiry, activity, updated_at):
             f"   Day Chg  : {sign}{s['day_change']:.2f}%\n"
             f"   Vol Surge: {s['vol_change']:+.1f}%\n"
             f"   OI Build : +{s['oi_change']:.2f}%\n"
-            f"   Score    : *{s['score']}/100*\n\n"
+            f"   Score    : *{s['score']}/100*\n"
+            f"{pcr_b_str}\n"
             f"   📌 Strike: ATM or 1 OTM {s['direction']}\n"
             f"   🛑 SL    : Rs {MAX_RISK_PER_TRADE:,} max loss\n"
             f"   🎯 Target: Rs {MAX_RISK_PER_TRADE * 2:,} profit\n"
@@ -950,6 +1014,121 @@ def _warm_nse_session():
         print("[NSE] Session warmed up.")
     except Exception as e:
         print(f"[NSE] Session warm-up failed: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  INDIA VIX + NIFTY PCR
+# ═══════════════════════════════════════════════════════════════════
+
+def fetch_india_vix():
+    """Fetch India VIX from NSE allIndices API."""
+    try:
+        r = _nse_session.get(
+            "https://www.nseindia.com/api/allIndices", timeout=10
+        )
+        r.raise_for_status()
+        for idx in r.json().get("data", []):
+            if idx.get("index") == "INDIA VIX":
+                vix = round(float(idx.get("last", 0)), 2)
+                _market_context["vix"] = vix
+                chg = idx.get("percentChange", 0)
+                print(f"[VIX] India VIX: {vix:.2f}  ({chg:+.2f}%)")
+                return vix
+    except Exception as e:
+        print(f"[VIX ERROR] {e}")
+    return None
+
+
+def fetch_nifty_pcr():
+    """Calculate Nifty PCR from live option chain (PE OI / CE OI)."""
+    try:
+        r = _nse_session.get(
+            "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY",
+            timeout=15
+        )
+        r.raise_for_status()
+        filtered = r.json().get("filtered", {})
+        ce_oi    = filtered.get("CE", {}).get("totOI", 0)
+        pe_oi    = filtered.get("PE", {}).get("totOI", 0)
+        if ce_oi > 0:
+            pcr = round(pe_oi / ce_oi, 3)
+            _market_context["pcr"] = pcr
+            print(f"[PCR] Nifty PCR: {pcr:.3f}  "
+                  f"(PE {pe_oi:,} / CE {ce_oi:,})")
+            return pcr
+    except Exception as e:
+        print(f"[PCR ERROR] {e}")
+    return None
+
+
+def refresh_market_context(force=False):
+    """
+    Refresh VIX + PCR every 15 min (or immediately if force=True).
+    Called at start of each scan — only hits NSE when stale.
+    """
+    now  = ist_now()
+    last = _market_context["last_refresh"]
+    if not force and last and (now - last).total_seconds() < 900:
+        return   # Still fresh (< 15 min old)
+
+    fetch_india_vix()
+    fetch_nifty_pcr()
+    _market_context["last_refresh"] = now
+
+
+def vix_label():
+    v = _market_context.get("vix")
+    if v is None:  return "—"
+    if v > VIX_EXTREME:  return f"{v:.1f} 🔴 EXTREME"
+    if v > VIX_NORMAL_MAX: return f"{v:.1f} 🟠 HIGH"
+    if v < VIX_CALM_MAX:   return f"{v:.1f} 🟢 CALM"
+    return f"{v:.1f} 🟡 NORMAL"
+
+
+def pcr_label():
+    p = _market_context.get("pcr")
+    if p is None:  return "—"
+    if p >= PCR_VERY_BULL: return f"{p:.2f} 🟢 VERY BULLISH"
+    if p >= PCR_BULL:      return f"{p:.2f} 🟢 BULLISH"
+    if p <= PCR_VERY_BEAR: return f"{p:.2f} 🔴 VERY BEARISH"
+    if p <= PCR_BEAR:      return f"{p:.2f} 🔴 BEARISH"
+    return f"{p:.2f} 🟡 NEUTRAL"
+
+
+def get_pcr_bonus(direction):
+    """Return score bonus based on PCR alignment with signal direction."""
+    pcr = _market_context.get("pcr")
+    if pcr is None:
+        return 0
+    if direction == "CALL":
+        if pcr >= PCR_VERY_BULL: return 15
+        if pcr >= PCR_BULL:      return 8
+        if pcr <= PCR_VERY_BEAR: return -10  # PCR says PUT, penalise CALL
+        if pcr <= PCR_BEAR:      return -5
+    elif direction == "PUT":
+        if pcr <= PCR_VERY_BEAR: return 15
+        if pcr <= PCR_BEAR:      return 8
+        if pcr >= PCR_VERY_BULL: return -10
+        if pcr >= PCR_BULL:      return -5
+    return 0
+
+
+def get_vix_threshold_delta():
+    """
+    Return how much to ADD to MIN_SCORE_TO_ALERT based on VIX.
+    Positive = raise bar (risky market).  Negative = lower bar (calm).
+    Returns (delta, block_signals).
+    """
+    vix = _market_context.get("vix")
+    if vix is None:
+        return 0, False
+    if vix > VIX_EXTREME:
+        return 0, True          # Block all signals
+    if vix > VIX_NORMAL_MAX:
+        return VIX_HIGH_BOOST, False
+    if vix < VIX_CALM_MAX:
+        return -5, False        # Ease slightly in calm market
+    return 0, False
 
 
 def fetch_preopen_data():
@@ -1285,6 +1464,9 @@ def premarket_scan():
 
     print(f"[{now.strftime('%H:%M:%S')}] Pre-market combined scan running...")
 
+    # ── Fetch VIX + PCR first (force refresh at market open) ─────
+    refresh_market_context(force=True)
+
     # Fetch both data sources in parallel context
     oi_data     = fetch_oi_gainers()
     oi_stocks   = parse_rows(oi_data) if oi_data else []
@@ -1340,6 +1522,16 @@ def premarket_scan():
     msg += "Time: " + now.strftime("%H:%M") + " IST  |  Expiry: " + expiry + "\n"
     msg += "F&O Breadth: ADV " + str(adv) + "  DEC " + str(dec) + "  UNCH " + str(unch)
     msg += "  (" + breadth_bias + ")\n"
+    msg += "India VIX  : " + vix_label() + "\n"
+    msg += "Nifty PCR  : " + pcr_label() + "\n"
+    # VIX warning
+    vix_d, vix_blk = get_vix_threshold_delta()
+    if vix_blk:
+        msg += "WARNING: VIX EXTREME — wait for market to settle before trading\n"
+    elif vix_d > 0:
+        msg += f"Note: High VIX — score bar raised by {vix_d:.0f} pts today\n"
+    elif vix_d < 0:
+        msg += "Note: Low VIX — calm market, thresholds slightly eased\n"
     msg += "----------------------------\n\n"
 
     total_signals = 0
@@ -1520,6 +1712,9 @@ def scan_job():
 
     state['scan_count'] += 1
     print(f"\n[{now.strftime('%H:%M:%S')}] Scan #{state['scan_count']}")
+
+    # ── Refresh VIX + PCR every 15 min ───────────────────────────
+    refresh_market_context()
 
     data   = fetch_oi_gainers()
     expiry = _expiry_cache.get('expiry', '?')
@@ -1812,13 +2007,22 @@ def process_command(text, username=""):
     # ── STATUS ────────────────────────────────────────────────────
     if cmd == "STATUS":
         now = ist_now().strftime("%H:%M")
+        vix_d, vix_blk = get_vix_threshold_delta()
+        eff_threshold  = MIN_SCORE_TO_ALERT + vix_d
         msg  = "Bot Status " + now + " IST\n\n"
         msg += "  Scans today  : " + str(state["scan_count"]) + "\n"
         msg += "  Alerts today : " + str(state["alerts_sent"]) + "\n"
         msg += "  Alerted      : " + (", ".join(state["alerted_today"]) or "None") + "\n"
         msg += "  Market open  : " + ("Yes" if is_market_open() else "No") + "\n"
-        msg += "  Score min    : " + str(MIN_SCORE_TO_ALERT) + "\n"
-        msg += "  Slots left   : " + str(MAX_TRADES_PER_DAY - state["alerts_sent"])
+        msg += "  Score min    : " + str(MIN_SCORE_TO_ALERT)
+        if vix_d != 0:
+            msg += f" → {eff_threshold:.0f} (VIX adj {vix_d:+.0f})"
+        msg += "\n"
+        msg += "  Slots left   : " + str(MAX_TRADES_PER_DAY - state["alerts_sent"]) + "\n"
+        msg += "  India VIX    : " + vix_label() + "\n"
+        msg += "  Nifty PCR    : " + pcr_label()
+        if vix_blk:
+            msg += "\n  *** SIGNALS BLOCKED — VIX EXTREME ***"
         return msg
 
     # ── HELP ──────────────────────────────────────────────────────
@@ -1832,8 +2036,18 @@ def process_command(text, username=""):
         msg += "EXIT 85            - log exit premium\n"
         msg += "WEEKLY             - weekly performance report\n"
         msg += "TUNE               - analyse score threshold\n"
-        msg += "STATUS             - current bot status\n"
-        msg += "HELP               - this message"
+        msg += "STATUS             - bot status + VIX + PCR\n"
+        msg += "HELP               - this message\n\n"
+        msg += "VIX rules:\n"
+        msg += f"  < {VIX_CALM_MAX}   = CALM  (score bar -5)\n"
+        msg += f"  {VIX_CALM_MAX}-{VIX_NORMAL_MAX} = NORMAL\n"
+        msg += f"  > {VIX_NORMAL_MAX}  = HIGH  (score bar +{VIX_HIGH_BOOST:.0f})\n"
+        msg += f"  > {VIX_EXTREME}  = EXTREME (signals blocked)\n\n"
+        msg += "PCR rules:\n"
+        msg += f"  > {PCR_VERY_BULL} = CALL +15 pts\n"
+        msg += f"  > {PCR_BULL} = CALL  +8 pts\n"
+        msg += f"  < {PCR_BEAR} = PUT   +8 pts\n"
+        msg += f"  < {PCR_VERY_BEAR} = PUT  +15 pts"
         return msg
 
     return None

@@ -403,7 +403,8 @@ function renderSignals() {
   const headers = ['Date','Time','Symbol','Direction','LTP (Rs)','Day Chg %',
     'Vol Surge %','OI Build %','Score /100','Buildup','Signal Type','Tag',
     'Suggested Strike','SL (Rs)','Target (Rs)','Session','Market Activity',
-    'Entry Premium','Exit Premium','P&L (Rs)','Result','Notes'];
+    'Entry Premium','Exit Premium','P&L (Rs)','Result','Notes',
+    'India VIX','Nifty PCR'];
 
   buildTableHead('sig-table', headers);
 
@@ -467,6 +468,8 @@ function renderSignalRows(rows) {
       <td>${r['P&L (Rs)']||''}</td>
       <td class="${rCls}">${r['Result']||''}</td>
       <td>${r['Notes']||''}</td>
+      <td>${vixCell(r['India VIX'])}</td>
+      <td>${pcrCell(r['Nifty PCR'])}</td>
     </tr>`;
   }).join('');
 }
@@ -534,6 +537,24 @@ function renderSummary() {
       <td><strong>${r['Best Stock']||'—'}</strong></td>
     </tr>`;
   }).join('');
+}
+
+// ── VIX / PCR cell helpers ───────────────────────────────────────
+function vixCell(v) {
+  if (v === '' || v == null) return '—';
+  v = parseFloat(v);
+  if (isNaN(v)) return '—';
+  const color = v > 25 ? 'var(--put)' : v > 20 ? 'var(--warn)' : v < 12 ? 'var(--call)' : 'var(--muted)';
+  const tag   = v > 25 ? '🔴' : v > 20 ? '🟠' : v < 12 ? '🟢' : '🟡';
+  return `<span style="color:${color};font-weight:600">${tag} ${v.toFixed(1)}</span>`;
+}
+function pcrCell(p) {
+  if (p === '' || p == null) return '—';
+  p = parseFloat(p);
+  if (isNaN(p)) return '—';
+  const color = p >= 1.2 ? 'var(--call)' : p <= 0.8 ? 'var(--put)' : 'var(--muted)';
+  const tag   = p >= 1.5 ? '🟢🟢' : p >= 1.2 ? '🟢' : p <= 0.6 ? '🔴🔴' : p <= 0.8 ? '🔴' : '🟡';
+  return `<span style="color:${color};font-weight:600">${tag} ${p.toFixed(2)}</span>`;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
