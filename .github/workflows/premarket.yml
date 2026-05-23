@@ -1,10 +1,9 @@
-name: NSE Options Bot
+name: NSE Pre-Market Scan
 
 on:
-  # 9:30 AM IST = 04:00 UTC  (after Opening Volatility settles)
-  # Bot auto-exits at 3:28 PM IST → total job ~5h58m  (under 6-hour GH limit)
+  # 9:10 AM IST = 03:40 UTC  (5 min before market open)
   schedule:
-    - cron: "00 4 * * 1-5"
+    - cron: "40 3 * * 1-5"
 
   workflow_dispatch:
 
@@ -12,15 +11,16 @@ permissions:
   contents: write
 
 jobs:
-  run-bot:
+  premarket:
     runs-on: ubuntu-latest
-    timeout-minutes: 360   # GitHub hard limit — bot exits itself before this
+    timeout-minutes: 15   # Pre-market scan takes < 5 min
 
     env:
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       CHAT_ID: ${{ secrets.CHAT_ID }}
       CI: "true"
       EXCEL_FOLDER: "./logs"
+      PREMARKET_ONLY: "true"   # Bot runs premarket_scan() and exits
 
     steps:
       - name: Checkout code
@@ -37,15 +37,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run NSE bot (market session)
+      - name: Run pre-market scan
         run: python nse_options_bot_stock_cookies_xl_ex_enhanced.py
 
-      - name: Commit and push Excel logs to repo
+      - name: Commit pre-open Excel log
         if: always()
         run: |
           git config user.name "NSE Bot"
           git config user.email "nsebot@github-actions"
           git add logs/*.xlsx 2>/dev/null || true
-          git diff --cached --quiet && echo "No new Excel data to commit" && exit 0
-          git commit -m "logs: update NSE signals $(date +'%Y-%m-%d')"
+          git diff --cached --quiet && echo "No pre-open data to commit" && exit 0
+          git commit -m "logs: pre-market scan $(date +'%Y-%m-%d %H:%M UTC')"
           git push

@@ -2171,6 +2171,33 @@ def eod_job():
 if __name__ == "__main__":
     import sys
 
+    IST_NOW = ist_now()
+
+    # ── Guard: exit immediately if started outside market window ────
+    # Prevents GitHub Actions cron-delay from wasting 6-hour job slots
+    _mins_now = IST_NOW.hour * 60 + IST_NOW.minute
+    _is_weekday = IST_NOW.weekday() < 5
+    _after_close = _mins_now > 15 * 60 + 35   # After 3:35 PM IST
+    _before_preopen = _mins_now < 9 * 60 + 5   # Before 9:05 AM IST
+
+    if not _is_weekday:
+        print(f"[{IST_NOW.strftime('%A %H:%M')} IST] Weekend — bot exiting.")
+        sys.exit(0)
+
+    if _after_close or _before_preopen:
+        print(f"[{IST_NOW.strftime('%H:%M')} IST] Outside market window — bot exiting.")
+        sys.exit(0)
+
+    # ── Pre-market only mode (separate GitHub Actions job) ──────────
+    PREMARKET_ONLY = os.environ.get("PREMARKET_ONLY", "false").lower() == "true"
+    if PREMARKET_ONLY:
+        print(f"[{IST_NOW.strftime('%H:%M')} IST] Running pre-market scan only...")
+        _warm_nse_session()
+        refresh_market_context(force=True)
+        premarket_scan()
+        print("[PREMARKET] Done. Exiting.")
+        sys.exit(0)
+
     if len(sys.argv) > 1 and sys.argv[1] == 'test':
         print("🧪 Test mode...")
         reset_daily_state()
@@ -2241,6 +2268,12 @@ if __name__ == "__main__":
     while True:
         schedule.run_pending()
         time.sleep(20)
+        # Auto-exit at 3:28 PM IST so GitHub Actions "commit" step can run
+        # within the 6-hour job limit (job starts ~9:30 AM → 5h58m → safe)
+        _t = ist_now()
+        if _t.hour * 60 + _t.minute >= 15 * 60 + 28:
+            print(f"[{_t.strftime('%H:%M')} IST] Market session complete — bot exiting.")
+            break
 
 
 # ═══════════════════════════════════════════════════════════════════
