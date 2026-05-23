@@ -1,0 +1,50 @@
+name: Nifty Precision Bot
+
+on:
+  # 9:35 AM IST = 04:05 UTC (after ORB forms, safe 5h57m under GH 6h limit)
+  schedule:
+    - cron: "05 4 * * 1-5"
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360   # Bot auto-exits at 3:32 PM IST (~5h57m total)
+
+    env:
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      CHAT_ID:        ${{ secrets.CHAT_ID }}
+      CI:             "true"
+      EXCEL_FOLDER:   "./logs"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Nifty Precision Bot
+        run: python nifty_precision_bot.py
+
+      - name: Commit and push Excel logs
+        if: always()
+        run: |
+          git config user.name "Nifty Precision Bot"
+          git config user.email "nsebot@github-actions"
+          git add logs/*.xlsx 2>/dev/null || true
+          git diff --cached --quiet && echo "No new data" && exit 0
+          git commit -m "logs: nifty precision signals $(date +'%Y-%m-%d')"
+          git push
