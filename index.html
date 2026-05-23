@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NSE Options Signal Dashboard</title>
+<title>NSE Signal Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
@@ -19,6 +19,7 @@
     --put:      #f85149;
     --accent:   #58a6ff;
     --warn:     #d29922;
+    --ultra:    #bc8cff;
     --header:   #1f3864;
   }
 
@@ -26,10 +27,11 @@
 
   header {
     background: var(--header);
-    padding: 16px 24px;
+    padding: 14px 24px;
     display: flex; align-items: center; justify-content: space-between;
     border-bottom: 1px solid var(--border);
     position: sticky; top: 0; z-index: 100;
+    flex-wrap: wrap; gap: 8px;
   }
   header h1 { font-size: 18px; font-weight: 700; letter-spacing: .5px; }
   header h1 span { color: var(--accent); }
@@ -37,41 +39,51 @@
 
   .container { max-width: 1400px; margin: 0 auto; padding: 20px 24px; }
 
-  /* ── Tabs ── */
-  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 20px; }
+  /* ── Top-level Tabs ── */
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 20px; flex-wrap: wrap; }
   .tab-btn {
     background: none; border: none; color: var(--muted); cursor: pointer;
     padding: 10px 20px; font-size: 14px; border-bottom: 2px solid transparent;
-    transition: color .15s, border-color .15s;
+    transition: color .15s, border-color .15s; white-space: nowrap;
   }
   .tab-btn:hover { color: var(--text); }
   .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-btn.prec.active { color: var(--ultra); border-bottom-color: var(--ultra); }
   .tab-pane { display: none; }
   .tab-pane.active { display: block; }
 
+  /* Section label */
+  .section-pill {
+    display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .8px;
+    text-transform: uppercase; padding: 3px 10px; border-radius: 20px; margin-bottom: 16px;
+  }
+  .section-pill.old  { background: rgba(88,166,255,.15); color: var(--accent); }
+  .section-pill.prec { background: rgba(188,140,255,.15); color: var(--ultra); }
+
   /* ── Cards ── */
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 24px; }
   .card {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 8px; padding: 16px 18px;
   }
   .card .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; margin-bottom: 6px; }
-  .card .value { font-size: 28px; font-weight: 700; }
+  .card .value { font-size: 26px; font-weight: 700; }
   .card .sub   { font-size: 11px; color: var(--muted); margin-top: 4px; }
   .card.call   .value { color: var(--call); }
   .card.put    .value { color: var(--put); }
   .card.accent .value { color: var(--accent); }
   .card.warn   .value { color: var(--warn); }
+  .card.ultra  .value { color: var(--ultra); }
 
-  /* ── Charts row ── */
+  /* ── Charts ── */
   .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
   @media (max-width: 800px) { .charts { grid-template-columns: 1fr; } }
   .chart-box {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 8px; padding: 18px;
   }
-  .chart-box h3 { font-size: 13px; color: var(--muted); margin-bottom: 14px; }
-  .chart-box canvas { max-height: 240px; }
+  .chart-box h3 { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 14px; }
+  .chart-box canvas { max-height: 220px; }
 
   /* ── Table ── */
   .table-wrap {
@@ -96,22 +108,30 @@
     background: var(--header); color: #fff; font-size: 11px; text-transform: uppercase;
     letter-spacing: .6px; padding: 10px 12px; white-space: nowrap; position: sticky; top: 0;
   }
+  thead.prec th { background: #2a1f4a; }
   tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
   tbody tr:hover { background: rgba(88,166,255,.06); }
   tbody td { padding: 8px 12px; white-space: nowrap; font-size: 13px; }
+
   .badge {
     display: inline-block; padding: 2px 8px; border-radius: 10px;
     font-size: 11px; font-weight: 700; letter-spacing: .4px;
   }
-  .badge.CALL { background: rgba(63,185,80,.18); color: var(--call); }
-  .badge.PUT  { background: rgba(248,81,73,.18);  color: var(--put); }
-  .badge.NEW  { background: rgba(210,153,34,.18); color: var(--warn); }
-  .score-high { color: var(--call); font-weight: 600; }
-  .score-mid  { color: var(--warn); font-weight: 600; }
-  .score-low  { color: var(--muted); }
+  .badge.CALL         { background: rgba(63,185,80,.18);  color: var(--call); }
+  .badge.PUT          { background: rgba(248,81,73,.18);  color: var(--put); }
+  .badge.NEW          { background: rgba(210,153,34,.18); color: var(--warn); }
+  .badge.ULTRA        { background: rgba(188,140,255,.2); color: var(--ultra); }
+  .badge.STRONG       { background: rgba(88,166,255,.18); color: var(--accent); }
+  .badge.MEDIUM       { background: rgba(210,153,34,.18); color: var(--warn); }
+
+  .score-ultra { color: var(--ultra); font-weight: 700; }
+  .score-high  { color: var(--call);  font-weight: 600; }
+  .score-mid   { color: var(--warn);  font-weight: 600; }
+  .score-low   { color: var(--muted); }
   .result-PENDING { color: var(--muted); }
   .result-WIN     { color: var(--call); font-weight: 600; }
   .result-LOSS    { color: var(--put);  font-weight: 600; }
+  .fib-hit        { color: var(--ultra); font-weight: 700; }
 
   /* ── Loading ── */
   #loader {
@@ -127,73 +147,69 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   #loader p { color: var(--muted); font-size: 13px; }
 
-  /* ── Error ── */
   .error-box {
     background: rgba(248,81,73,.1); border: 1px solid var(--put);
     border-radius: 8px; padding: 16px 20px; color: var(--put);
     margin: 20px 0; font-size: 13px;
   }
+  .warn-box {
+    background: rgba(210,153,34,.1); border: 1px solid var(--warn);
+    border-radius: 8px; padding: 10px 16px; color: var(--warn);
+    margin-bottom: 16px; font-size: 12px;
+  }
 
   .empty { padding: 40px; text-align: center; color: var(--muted); }
+  .divider { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
 </style>
 </head>
 <body>
 
 <div id="loader">
   <div class="spinner"></div>
-  <p>Loading NSE_Bot_Master.xlsx …</p>
+  <p id="loader-msg">Loading dashboards…</p>
 </div>
 
 <header>
-  <h1>NSE Options <span>Signal Dashboard</span></h1>
+  <h1>NSE <span>Signal Dashboard</span></h1>
   <span id="last-updated">—</span>
 </header>
 
 <div class="container">
 
-  <!-- Tabs -->
+  <!-- Top-level Tabs -->
   <div class="tabs">
-    <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
-    <button class="tab-btn" onclick="switchTab('signals')">Signals</button>
-    <button class="tab-btn" onclick="switchTab('scans')">All Scans</button>
-    <button class="tab-btn" onclick="switchTab('summary')">Summary</button>
+    <button class="tab-btn active"      onclick="switchTab('overview')">Overview</button>
+    <button class="tab-btn"             onclick="switchTab('signals')">NSE Signals</button>
+    <button class="tab-btn"             onclick="switchTab('scans')">All Scans</button>
+    <button class="tab-btn"             onclick="switchTab('summary')">Summary</button>
+    <button class="tab-btn prec"        onclick="switchTab('prec-overview')">🎯 Precision Overview</button>
+    <button class="tab-btn prec"        onclick="switchTab('prec-signals')">🎯 Precision Signals</button>
   </div>
 
-  <!-- OVERVIEW TAB -->
+  <!-- ══════════════════════════════════════
+       OLD BOT — OVERVIEW
+  ══════════════════════════════════════ -->
   <div id="tab-overview" class="tab-pane active">
+    <span class="section-pill old">NSE Options Bot — Stock Scanner</span>
     <div class="cards" id="cards"></div>
     <div class="charts">
-      <div class="chart-box">
-        <h3>DAILY SIGNALS — CALL vs PUT</h3>
-        <canvas id="chartDaily"></canvas>
-      </div>
-      <div class="chart-box">
-        <h3>SCORE DISTRIBUTION</h3>
-        <canvas id="chartScore"></canvas>
-      </div>
+      <div class="chart-box"><h3>Daily Signals — CALL vs PUT</h3><canvas id="chartDaily"></canvas></div>
+      <div class="chart-box"><h3>Score Distribution</h3><canvas id="chartScore"></canvas></div>
     </div>
     <div class="charts">
-      <div class="chart-box">
-        <h3>MARKET ACTIVITY OVER SCANS (TODAY)</h3>
-        <canvas id="chartActivity"></canvas>
-      </div>
-      <div class="chart-box">
-        <h3>TOP SIGNALLED STOCKS</h3>
-        <canvas id="chartTop"></canvas>
-      </div>
+      <div class="chart-box"><h3>Market Activity Over Scans (Today)</h3><canvas id="chartActivity"></canvas></div>
+      <div class="chart-box"><h3>Top Signalled Stocks</h3><canvas id="chartTop"></canvas></div>
     </div>
   </div>
 
-  <!-- SIGNALS TAB -->
+  <!-- OLD BOT — SIGNALS TAB -->
   <div id="tab-signals" class="tab-pane">
     <div class="table-wrap">
       <div class="table-toolbar">
         <input id="sig-search" type="text" placeholder="Search symbol, direction, session…" oninput="filterSignals()">
         <label>Direction:
           <select id="sig-dir" onchange="filterSignals()">
-            <option value="">All</option>
-            <option>CALL</option>
-            <option>PUT</option>
+            <option value="">All</option><option>CALL</option><option>PUT</option>
           </select>
         </label>
         <label>Date:
@@ -201,10 +217,7 @@
         </label>
         <label>Result:
           <select id="sig-result" onchange="filterSignals()">
-            <option value="">All</option>
-            <option>PENDING</option>
-            <option>WIN</option>
-            <option>LOSS</option>
+            <option value="">All</option><option>PENDING</option><option>WIN</option><option>LOSS</option>
           </select>
         </label>
       </div>
@@ -212,11 +225,11 @@
     </div>
   </div>
 
-  <!-- SCANS TAB -->
+  <!-- OLD BOT — SCANS TAB -->
   <div id="tab-scans" class="tab-pane">
     <div class="table-wrap">
       <div class="table-toolbar">
-        <input id="scan-search" type="text" placeholder="Search date, session, stocks alerted…" oninput="filterScans()">
+        <input id="scan-search" type="text" placeholder="Search date, session…" oninput="filterScans()">
         <label>Date:
           <select id="scan-date" onchange="filterScans()"><option value="">All dates</option></select>
         </label>
@@ -225,56 +238,99 @@
     </div>
   </div>
 
-  <!-- SUMMARY TAB -->
+  <!-- OLD BOT — SUMMARY TAB -->
   <div id="tab-summary" class="tab-pane">
     <div class="table-wrap">
       <div class="tbl-scroll"><table id="sum-table"><thead></thead><tbody></tbody></table></div>
     </div>
   </div>
 
+  <!-- ══════════════════════════════════════
+       PRECISION BOT — OVERVIEW
+  ══════════════════════════════════════ -->
+  <div id="tab-prec-overview" class="tab-pane">
+    <span class="section-pill prec">Nifty Precision Bot — ORB + Fib + 8-Indicator Confluence</span>
+    <div id="prec-warn" style="display:none" class="warn-box">Nifty_Precision_Bot.xlsx not found — run the bot at least once to generate data.</div>
+    <div class="cards" id="prec-cards"></div>
+    <div class="charts">
+      <div class="chart-box"><h3>Daily Signals — CALL vs PUT</h3><canvas id="pChartDaily"></canvas></div>
+      <div class="chart-box"><h3>Score Distribution</h3><canvas id="pChartScore"></canvas></div>
+    </div>
+    <div class="charts">
+      <div class="chart-box"><h3>Signals by Instrument</h3><canvas id="pChartInstrument"></canvas></div>
+      <div class="chart-box"><h3>Fibonacci Hit Rate</h3><canvas id="pChartFib"></canvas></div>
+    </div>
+  </div>
+
+  <!-- PRECISION BOT — SIGNALS TAB -->
+  <div id="tab-prec-signals" class="tab-pane">
+    <span class="section-pill prec">Nifty Precision Bot — Signals</span>
+    <div class="table-wrap">
+      <div class="table-toolbar">
+        <input id="prec-search" type="text" placeholder="Search instrument, rating, Fib level…" oninput="filterPrec()">
+        <label>Direction:
+          <select id="prec-dir" onchange="filterPrec()">
+            <option value="">All</option><option>CALL</option><option>PUT</option>
+          </select>
+        </label>
+        <label>Instrument:
+          <select id="prec-inst" onchange="filterPrec()">
+            <option value="">All</option>
+            <option>NIFTY50</option><option>BANKNIFTY</option><option>SENSEX</option>
+          </select>
+        </label>
+        <label>Rating:
+          <select id="prec-rating" onchange="filterPrec()">
+            <option value="">All</option>
+            <option>ULTRA STRONG</option><option>STRONG</option><option>MEDIUM</option>
+          </select>
+        </label>
+        <label>Date:
+          <select id="prec-date" onchange="filterPrec()"><option value="">All dates</option></select>
+        </label>
+        <label>Fib Hit:
+          <select id="prec-fib" onchange="filterPrec()">
+            <option value="">All</option><option value="Yes">Yes</option><option value="No">No</option>
+          </select>
+        </label>
+      </div>
+      <div class="tbl-scroll"><table id="prec-table"><thead class="prec"></thead><tbody></tbody></table></div>
+    </div>
+  </div>
+
 </div><!-- /container -->
 
 <script>
-// ── Data stores ──────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════
+//  DATA STORES
+// ═══════════════════════════════════════════════════════
 let sigRows  = [], scanRows = [], sumRows = [];
 let sigAll   = [], scanAll  = [];
+let precRows = [], precAll  = [];
 let charts   = {};
 
-// ── Tab switch ───────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════
+//  TAB SWITCH
+// ═══════════════════════════════════════════════════════
 function switchTab(name) {
-  document.querySelectorAll('.tab-btn').forEach((b,i) => {
-    const names = ['overview','signals','scans','summary'];
-    b.classList.toggle('active', names[i] === name);
-  });
+  const names = ['overview','signals','scans','summary','prec-overview','prec-signals'];
+  document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', names[i] === name));
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-  document.getElementById('tab-'+name).classList.add('active');
+  document.getElementById('tab-' + name).classList.add('active');
 }
 
-// ── Load Excel ───────────────────────────────────────────────────
-async function loadExcel() {
-  const paths = ['./logs/NSE_Bot_Master.xlsx', 'logs/NSE_Bot_Master.xlsx'];
-  let data = null;
+// ═══════════════════════════════════════════════════════
+//  LOAD EXCEL FILES
+// ═══════════════════════════════════════════════════════
+async function fetchXlsx(filename) {
+  const paths = [`./logs/${filename}`, `logs/${filename}`];
   for (const p of paths) {
     try {
       const res = await fetch(p);
-      if (!res.ok) continue;
-      data = await res.arrayBuffer();
-      break;
+      if (res.ok) return await res.arrayBuffer();
     } catch(e) {}
   }
-  if (!data) throw new Error('Could not fetch logs/NSE_Bot_Master.xlsx — make sure the file is in the repo.');
-
-  const wb = XLSX.read(data, { type: 'array', cellDates: true });
-
-  sigRows  = sheetToObjects(wb, 'Signals');
-  scanRows = sheetToObjects(wb, 'All Scans');
-  sumRows  = sheetToObjects(wb, 'Summary');
-
-  sigAll  = [...sigRows];
-  scanAll = [...scanRows];
-
-  document.getElementById('last-updated').textContent =
-    'Updated ' + new Date().toLocaleString('en-IN', { timeZone:'Asia/Kolkata' }) + ' IST';
+  return null;
 }
 
 function sheetToObjects(wb, name) {
@@ -283,14 +339,46 @@ function sheetToObjects(wb, name) {
   return XLSX.utils.sheet_to_json(ws, { defval: '' });
 }
 
-// ── Render overview ──────────────────────────────────────────────
+async function loadAll() {
+  setLoader('Loading NSE_Bot_Master.xlsx…');
+  const [buf1, buf2] = await Promise.all([
+    fetchXlsx('NSE_Bot_Master.xlsx'),
+    fetchXlsx('Nifty_Precision_Bot.xlsx'),
+  ]);
+
+  if (!buf1) throw new Error('Could not fetch logs/NSE_Bot_Master.xlsx — make sure the file is in the repo.');
+
+  const wb1 = XLSX.read(buf1, { type: 'array', cellDates: true });
+  sigRows  = sheetToObjects(wb1, 'Signals');
+  scanRows = sheetToObjects(wb1, 'All Scans');
+  sumRows  = sheetToObjects(wb1, 'Summary');
+  sigAll   = [...sigRows];
+  scanAll  = [...scanRows];
+
+  if (buf2) {
+    const wb2 = XLSX.read(buf2, { type: 'array', cellDates: true });
+    precRows = sheetToObjects(wb2, 'Signals');
+    precAll  = [...precRows];
+  } else {
+    document.getElementById('prec-warn').style.display = 'block';
+  }
+
+  document.getElementById('last-updated').textContent =
+    'Updated ' + new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST';
+}
+
+function setLoader(msg) { document.getElementById('loader-msg').textContent = msg; }
+
+// ═══════════════════════════════════════════════════════
+//  OLD BOT — OVERVIEW
+// ═══════════════════════════════════════════════════════
 function renderOverview() {
   const validSig = sigRows.filter(r => r['Symbol'] && r['Direction']);
   const calls    = validSig.filter(r => r['Direction'] === 'CALL').length;
   const puts     = validSig.filter(r => r['Direction'] === 'PUT').length;
   const scores   = validSig.map(r => +r['Score /100']).filter(s => s > 0);
   const best     = scores.length ? Math.max(...scores) : 0;
-  const today    = new Date().toLocaleDateString('en-CA', { timeZone:'Asia/Kolkata' });
+  const today    = todayDate();
   const todaySig = validSig.filter(r => String(r['Date']).startsWith(today));
 
   document.getElementById('cards').innerHTML = `
@@ -301,14 +389,11 @@ function renderOverview() {
     <div class="card accent"><div class="label">Today's Signals</div><div class="value">${todaySig.length}</div><div class="sub">${today}</div></div>
     <div class="card"><div class="label">Total Scans</div><div class="value">${scanRows.length}</div><div class="sub">all sessions</div></div>
   `;
-
   buildDailyChart(validSig);
   buildScoreChart(scores);
   buildActivityChart();
   buildTopChart(validSig);
 }
-
-function pct(n, total) { return total ? Math.round(n/total*100) : 0; }
 
 function buildDailyChart(rows) {
   const byDate = {};
@@ -319,8 +404,7 @@ function buildDailyChart(rows) {
     byDate[d][r['Direction']]++;
   });
   const dates = Object.keys(byDate).sort().slice(-20);
-  destroyChart('chartDaily');
-  charts.daily = new Chart(document.getElementById('chartDaily'), {
+  dc('chartDaily', {
     type: 'bar',
     data: {
       labels: dates,
@@ -337,34 +421,23 @@ function buildScoreChart(scores) {
   const buckets = [40,50,60,70,80,90,101];
   const labels  = ['40-49','50-59','60-69','70-79','80-89','90+'];
   const counts  = new Array(6).fill(0);
-  scores.forEach(s => {
-    const i = buckets.findIndex(b => s < b) - 1;
-    if (i >= 0) counts[i]++;
-  });
-  destroyChart('chartScore');
-  charts.score = new Chart(document.getElementById('chartScore'), {
+  scores.forEach(s => { const i = buckets.findIndex(b => s < b) - 1; if (i >= 0) counts[i]++; });
+  dc('chartScore', {
     type: 'bar',
-    data: {
-      labels,
-      datasets: [{ label:'Signals', data: counts, backgroundColor:'rgba(88,166,255,.7)' }]
-    },
+    data: { labels, datasets: [{ label:'Signals', data: counts, backgroundColor:'rgba(88,166,255,.7)' }] },
     options: chartOpts({})
   });
 }
 
 function buildActivityChart() {
-  const today = new Date().toLocaleDateString('en-CA', { timeZone:'Asia/Kolkata' });
+  const today = todayDate();
   const todayScans = scanRows.filter(r => String(r['Date']).startsWith(today));
   const labels = todayScans.map(r => String(r['Time']).slice(0,5));
   const data   = todayScans.map(r => +r['Activity /100'] || 0);
-  destroyChart('chartActivity');
-  charts.activity = new Chart(document.getElementById('chartActivity'), {
+  dc('chartActivity', {
     type: 'line',
-    data: {
-      labels,
-      datasets: [{ label:'Activity', data, borderColor:'rgba(210,153,34,.9)',
-        backgroundColor:'rgba(210,153,34,.15)', fill:true, tension:.3, pointRadius:2 }]
-    },
+    data: { labels, datasets: [{ label:'Activity', data, borderColor:'rgba(210,153,34,.9)',
+      backgroundColor:'rgba(210,153,34,.15)', fill:true, tension:.3, pointRadius:2 }] },
     options: chartOpts({ yMax: 100 })
   });
 }
@@ -373,46 +446,26 @@ function buildTopChart(rows) {
   const cnt = {};
   rows.forEach(r => { if (r['Symbol']) cnt[r['Symbol']] = (cnt[r['Symbol']]||0)+1; });
   const top = Object.entries(cnt).sort((a,b)=>b[1]-a[1]).slice(0,10);
-  destroyChart('chartTop');
-  charts.top = new Chart(document.getElementById('chartTop'), {
+  dc('chartTop', {
     type: 'bar',
-    data: {
-      labels: top.map(x=>x[0]),
-      datasets: [{ label:'Signals', data: top.map(x=>x[1]), backgroundColor:'rgba(88,166,255,.7)' }]
-    },
+    data: { labels: top.map(x=>x[0]), datasets: [{ label:'Signals', data: top.map(x=>x[1]), backgroundColor:'rgba(88,166,255,.7)' }] },
     options: chartOpts({ indexAxis: 'y' })
   });
 }
 
-function chartOpts({ stacked=false, yMax, indexAxis }={}) {
-  return {
-    responsive: true, maintainAspectRatio: true,
-    indexAxis: indexAxis || 'x',
-    plugins: { legend: { labels: { color:'#8b949e', font:{ size:11 } } } },
-    scales: {
-      x: { stacked, ticks:{ color:'#8b949e', font:{size:10} }, grid:{ color:'rgba(48,54,61,.8)' } },
-      y: { stacked, max: yMax, ticks:{ color:'#8b949e', font:{size:10} }, grid:{ color:'rgba(48,54,61,.8)' } }
-    }
-  };
-}
-
-function destroyChart(id) { if (charts[id]) { charts[id].destroy(); delete charts[id]; } }
-
-// ── Render Signals table ─────────────────────────────────────────
+// ═══════════════════════════════════════════════════════
+//  OLD BOT — SIGNALS TABLE
+// ═══════════════════════════════════════════════════════
 function renderSignals() {
   const headers = ['Date','Time','Symbol','Direction','LTP (Rs)','Day Chg %',
     'Vol Surge %','OI Build %','Score /100','Buildup','Signal Type','Tag',
     'Suggested Strike','SL (Rs)','Target (Rs)','Session','Market Activity',
-    'Entry Premium','Exit Premium','P&L (Rs)','Result','Notes',
-    'India VIX','Nifty PCR'];
+    'Entry Premium','Exit Premium','P&L (Rs)','Result','Notes','India VIX','Nifty PCR'];
+  buildTableHead('sig-table', headers, false);
 
-  buildTableHead('sig-table', headers);
-
-  // Populate date filter
-  const sel = document.getElementById('sig-date');
-  const dates = [...new Set(sigAll.map(r=>String(r['Date']).slice(0,10)).filter(Boolean))].sort().reverse();
+  const sel   = document.getElementById('sig-date');
+  const dates = uniqueDates(sigAll, 'Date');
   sel.innerHTML = '<option value="">All dates</option>' + dates.map(d=>`<option>${d}</option>`).join('');
-
   renderSignalRows(sigAll);
 }
 
@@ -421,95 +474,76 @@ function filterSignals() {
   const dir = document.getElementById('sig-dir').value;
   const dt  = document.getElementById('sig-date').value;
   const res = document.getElementById('sig-result').value;
-  const filtered = sigAll.filter(r => {
+  renderSignalRows(sigAll.filter(r => {
     if (dir && r['Direction'] !== dir) return false;
     if (dt  && !String(r['Date']).startsWith(dt)) return false;
     if (res && r['Result'] !== res) return false;
-    if (q) {
-      const blob = Object.values(r).join(' ').toLowerCase();
-      if (!blob.includes(q)) return false;
-    }
+    if (q && !Object.values(r).join(' ').toLowerCase().includes(q)) return false;
     return true;
-  });
-  renderSignalRows(filtered);
+  }));
 }
 
 function renderSignalRows(rows) {
-  const validRows = rows.filter(r => r['Symbol'] && r['Direction']);
+  const valid = rows.filter(r => r['Symbol'] && r['Direction']);
   const tbody = document.querySelector('#sig-table tbody');
-  if (!validRows.length) { tbody.innerHTML = '<tr><td colspan="22" class="empty">No signals match</td></tr>'; return; }
-  tbody.innerHTML = validRows.slice().reverse().map(r => {
+  if (!valid.length) { tbody.innerHTML = '<tr><td colspan="24" class="empty">No signals match</td></tr>'; return; }
+  tbody.innerHTML = valid.slice().reverse().map(r => {
     const dir   = r['Direction'];
     const score = +r['Score /100'] || 0;
     const sCls  = score >= 70 ? 'score-high' : score >= 50 ? 'score-mid' : 'score-low';
-    const rCls  = 'result-' + (r['Result'] || 'PENDING');
     const chg   = +r['Day Chg %'] || 0;
     const chgCls = chg > 0 ? 'style="color:var(--call)"' : chg < 0 ? 'style="color:var(--put)"' : '';
     return `<tr>
-      <td>${r['Date']||''}</td>
-      <td>${r['Time']||''}</td>
+      <td>${r['Date']||''}</td><td>${r['Time']||''}</td>
       <td><strong>${r['Symbol']||''}</strong></td>
       <td><span class="badge ${dir}">${dir}</span></td>
       <td>${r['LTP (Rs)']||''}</td>
       <td ${chgCls}>${r['Day Chg %']||''}</td>
-      <td>${r['Vol Surge %']||''}</td>
-      <td>${r['OI Build %']||''}</td>
+      <td>${r['Vol Surge %']||''}</td><td>${r['OI Build %']||''}</td>
       <td class="${sCls}">${score||''}</td>
-      <td>${r['Buildup']||''}</td>
-      <td>${r['Signal Type']||''}</td>
+      <td>${r['Buildup']||''}</td><td>${r['Signal Type']||''}</td>
       <td><span class="badge ${r['Tag']||''}">${r['Tag']||''}</span></td>
-      <td>${r['Suggested Strike']||''}</td>
-      <td>${r['SL (Rs)']||''}</td>
-      <td>${r['Target (Rs)']||''}</td>
-      <td>${r['Session']||''}</td>
-      <td>${r['Market Activity']||''}</td>
-      <td>${r['Entry Premium']||''}</td>
-      <td>${r['Exit Premium']||''}</td>
-      <td>${r['P&L (Rs)']||''}</td>
-      <td class="${rCls}">${r['Result']||''}</td>
+      <td>${r['Suggested Strike']||''}</td><td>${r['SL (Rs)']||''}</td><td>${r['Target (Rs)']||''}</td>
+      <td>${r['Session']||''}</td><td>${r['Market Activity']||''}</td>
+      <td>${r['Entry Premium']||''}</td><td>${r['Exit Premium']||''}</td><td>${r['P&L (Rs)']||''}</td>
+      <td class="result-${r['Result']||'PENDING'}">${r['Result']||''}</td>
       <td>${r['Notes']||''}</td>
-      <td>${vixCell(r['India VIX'])}</td>
-      <td>${pcrCell(r['Nifty PCR'])}</td>
+      <td>${vixCell(r['India VIX'])}</td><td>${pcrCell(r['Nifty PCR'])}</td>
     </tr>`;
   }).join('');
 }
 
-// ── Render Scans table ───────────────────────────────────────────
+// ═══════════════════════════════════════════════════════
+//  OLD BOT — SCANS
+// ═══════════════════════════════════════════════════════
 function renderScans() {
-  const headers = ['Date','Time','Scan #','Total Stocks','Activity /100','Session','Signals Sent','Stocks Alerted'];
-  buildTableHead('scan-table', headers);
-
-  const sel = document.getElementById('scan-date');
-  const dates = [...new Set(scanAll.map(r=>String(r['Date']).slice(0,10)).filter(Boolean))].sort().reverse();
+  buildTableHead('scan-table', ['Date','Time','Scan #','Total Stocks','Activity /100','Session','Signals Sent','Stocks Alerted'], false);
+  const sel   = document.getElementById('scan-date');
+  const dates = uniqueDates(scanAll, 'Date');
   sel.innerHTML = '<option value="">All dates</option>' + dates.map(d=>`<option>${d}</option>`).join('');
-
   renderScanRows(scanAll);
 }
 
 function filterScans() {
   const q  = document.getElementById('scan-search').value.toLowerCase();
   const dt = document.getElementById('scan-date').value;
-  const filtered = scanAll.filter(r => {
+  renderScanRows(scanAll.filter(r => {
     if (dt && !String(r['Date']).startsWith(dt)) return false;
-    if (q) { const blob = Object.values(r).join(' ').toLowerCase(); if (!blob.includes(q)) return false; }
+    if (q && !Object.values(r).join(' ').toLowerCase().includes(q)) return false;
     return true;
-  });
-  renderScanRows(filtered);
+  }));
 }
 
 function renderScanRows(rows) {
   const tbody = document.querySelector('#scan-table tbody');
   if (!rows.length) { tbody.innerHTML = '<tr><td colspan="8" class="empty">No scans yet</td></tr>'; return; }
   tbody.innerHTML = rows.slice().reverse().map(r => {
-    const act = +r['Activity /100'] || 0;
-    const aCls = act >= 60 ? 'score-high' : act >= 30 ? 'score-mid' : 'score-low';
-    const sent = +r['Signals Sent'] || 0;
+    const act  = +r['Activity /100'] || 0;
+    const sent = +r['Signals Sent']  || 0;
     return `<tr>
-      <td>${r['Date']||''}</td>
-      <td>${r['Time']||''}</td>
-      <td>${r['Scan #']||''}</td>
+      <td>${r['Date']||''}</td><td>${r['Time']||''}</td><td>${r['Scan #']||''}</td>
       <td>${r['Total Stocks']||''}</td>
-      <td class="${aCls}">${act}</td>
+      <td class="${act>=60?'score-high':act>=30?'score-mid':'score-low'}">${act}</td>
       <td>${r['Session']||''}</td>
       <td ${sent>0?'style="color:var(--call);font-weight:600"':''}>${sent}</td>
       <td style="max-width:280px;white-space:normal">${r['Stocks Alerted']||'—'}</td>
@@ -517,18 +551,18 @@ function renderScanRows(rows) {
   }).join('');
 }
 
-// ── Render Summary table ─────────────────────────────────────────
+// ═══════════════════════════════════════════════════════
+//  OLD BOT — SUMMARY
+// ═══════════════════════════════════════════════════════
 function renderSummary() {
-  const headers = ['Date','Total Scans','Stocks w/ Signal','CALLs','PUTs','Avg Score','Best Score','Best Stock'];
-  buildTableHead('sum-table', headers);
+  buildTableHead('sum-table', ['Date','Total Scans','Stocks w/ Signal','CALLs','PUTs','Avg Score','Best Score','Best Stock'], false);
   const tbody = document.querySelector('#sum-table tbody');
   const valid = sumRows.filter(r => r['Date']);
   if (!valid.length) { tbody.innerHTML = '<tr><td colspan="8" class="empty">No summary data yet</td></tr>'; return; }
   tbody.innerHTML = valid.slice().reverse().map(r => {
     const best = +r['Best Score'] || 0;
     return `<tr>
-      <td><strong>${r['Date']||''}</strong></td>
-      <td>${r['Total Scans']||''}</td>
+      <td><strong>${r['Date']||''}</strong></td><td>${r['Total Scans']||''}</td>
       <td>${r['Stocks w/ Signal']||''}</td>
       <td style="color:var(--call);font-weight:600">${r['CALLs']||0}</td>
       <td style="color:var(--put);font-weight:600">${r['PUTs']||0}</td>
@@ -539,38 +573,271 @@ function renderSummary() {
   }).join('');
 }
 
-// ── VIX / PCR cell helpers ───────────────────────────────────────
+// ═══════════════════════════════════════════════════════
+//  PRECISION BOT — OVERVIEW
+// ═══════════════════════════════════════════════════════
+function renderPrecOverview() {
+  const valid  = precRows.filter(r => r['Instrument'] && r['Direction']);
+  const calls  = valid.filter(r => r['Direction'] === 'CALL').length;
+  const puts   = valid.filter(r => r['Direction'] === 'PUT').length;
+  const ultra  = valid.filter(r => String(r['Rating']).includes('ULTRA')).length;
+  const scores = valid.map(r => +r['Score /100']).filter(s => s > 0);
+  const best   = scores.length ? Math.max(...scores) : 0;
+  const avgSc  = scores.length ? Math.round(scores.reduce((a,b)=>a+b,0)/scores.length) : 0;
+  const today  = todayDate();
+  const todayV = valid.filter(r => String(r['Date']).startsWith(today));
+  const fibHit = valid.filter(r => String(r['Fib At Level?']).toLowerCase() === 'yes').length;
+
+  document.getElementById('prec-cards').innerHTML = `
+    <div class="card ultra"><div class="label">Total Signals</div><div class="value">${valid.length}</div><div class="sub">all time</div></div>
+    <div class="card call"><div class="label">CALLs</div><div class="value">${calls}</div><div class="sub">${pct(calls,valid.length)}%</div></div>
+    <div class="card put"><div class="label">PUTs</div><div class="value">${puts}</div><div class="sub">${pct(puts,valid.length)}%</div></div>
+    <div class="card ultra"><div class="label">Ultra Strong</div><div class="value">${ultra}</div><div class="sub">score ≥ 85</div></div>
+    <div class="card warn"><div class="label">Best Score</div><div class="value">${best}</div><div class="sub">avg ${avgSc}</div></div>
+    <div class="card accent"><div class="label">Today's</div><div class="value">${todayV.length}</div><div class="sub">${today}</div></div>
+    <div class="card"><div class="label">Fib Hits</div><div class="value">${fibHit}</div><div class="sub">${pct(fibHit,valid.length)}% at Fib level</div></div>
+  `;
+
+  buildPrecDailyChart(valid);
+  buildPrecScoreChart(scores);
+  buildPrecInstrumentChart(valid);
+  buildPrecFibChart(valid);
+}
+
+function buildPrecDailyChart(rows) {
+  const byDate = {};
+  rows.forEach(r => {
+    const d = String(r['Date']).slice(0,10);
+    if (!d || d === 'undefined') return;
+    byDate[d] = byDate[d] || { CALL:0, PUT:0 };
+    byDate[d][r['Direction']]++;
+  });
+  const dates = Object.keys(byDate).sort().slice(-20);
+  dc('pChartDaily', {
+    type: 'bar',
+    data: {
+      labels: dates,
+      datasets: [
+        { label:'CALL', data: dates.map(d=>byDate[d].CALL||0), backgroundColor:'rgba(63,185,80,.7)' },
+        { label:'PUT',  data: dates.map(d=>byDate[d].PUT||0),  backgroundColor:'rgba(248,81,73,.7)' }
+      ]
+    },
+    options: chartOpts({ stacked: true })
+  });
+}
+
+function buildPrecScoreChart(scores) {
+  const buckets = [65,70,75,80,85,90,101];
+  const labels  = ['65-69','70-74','75-79','80-84','85-89','90+'];
+  const counts  = new Array(6).fill(0);
+  const colors  = [
+    'rgba(139,148,158,.7)', 'rgba(88,166,255,.6)', 'rgba(88,166,255,.9)',
+    'rgba(63,185,80,.7)',   'rgba(63,185,80,.9)',   'rgba(188,140,255,.9)'
+  ];
+  scores.forEach(s => { const i = buckets.findIndex(b => s < b) - 1; if (i >= 0) counts[i]++; });
+  dc('pChartScore', {
+    type: 'bar',
+    data: { labels, datasets: [{ label:'Signals', data: counts, backgroundColor: colors }] },
+    options: chartOpts({})
+  });
+}
+
+function buildPrecInstrumentChart(rows) {
+  const cnt = { NIFTY50:0, BANKNIFTY:0, SENSEX:0 };
+  rows.forEach(r => { if (cnt[r['Instrument']] !== undefined) cnt[r['Instrument']]++; });
+  dc('pChartInstrument', {
+    type: 'doughnut',
+    data: {
+      labels: Object.keys(cnt),
+      datasets: [{
+        data: Object.values(cnt),
+        backgroundColor: ['rgba(88,166,255,.8)','rgba(188,140,255,.8)','rgba(210,153,34,.8)']
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: true,
+      plugins: { legend: { labels: { color:'#8b949e', font:{size:11} } } }
+    }
+  });
+}
+
+function buildPrecFibChart(rows) {
+  const byLevel = {};
+  rows.forEach(r => {
+    const lv = r['Fib Level'] || 'none';
+    const hit = String(r['Fib At Level?']).toLowerCase() === 'yes';
+    if (!byLevel[lv]) byLevel[lv] = { hit:0, miss:0 };
+    if (hit) byLevel[lv].hit++; else byLevel[lv].miss++;
+  });
+  const labels = ['0.236','0.382','0.500','0.618','0.786','none'];
+  const hits   = labels.map(l => (byLevel[l]||{}).hit  || 0);
+  const misses = labels.map(l => (byLevel[l]||{}).miss || 0);
+  dc('pChartFib', {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label:'At Level (entry)', data: hits,   backgroundColor:'rgba(188,140,255,.8)' },
+        { label:'Near (no entry)',  data: misses,  backgroundColor:'rgba(88,166,255,.4)' }
+      ]
+    },
+    options: chartOpts({ stacked: true })
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+//  PRECISION BOT — SIGNALS TABLE
+// ═══════════════════════════════════════════════════════
+function renderPrecSignals() {
+  const headers = [
+    'Date','Time','Instrument','Direction','Strike','Option',
+    'LTP','Score','Rating','R:R','Conds /8',
+    'EMA9','EMA21','VWAP','RSI(14)','SuperTrend',
+    'ORB H','ORB L','PDH','PDL',
+    'CPR Top','CPR Bot','CPR Narrow',
+    'Fib Level','Fib Price','Fib Dist%','Fib Hit?',
+    'SL Level','SL Pts','Target','Tgt Pts',
+    'VIX','PCR',
+    'Entry Prem','Exit Prem','P&L','Result','Notes'
+  ];
+  buildTableHead('prec-table', headers, true);
+
+  const sel   = document.getElementById('prec-date');
+  const dates = uniqueDates(precAll, 'Date');
+  sel.innerHTML = '<option value="">All dates</option>' + dates.map(d=>`<option>${d}</option>`).join('');
+  renderPrecRows(precAll);
+}
+
+function filterPrec() {
+  const q    = document.getElementById('prec-search').value.toLowerCase();
+  const dir  = document.getElementById('prec-dir').value;
+  const inst = document.getElementById('prec-inst').value;
+  const rat  = document.getElementById('prec-rating').value;
+  const dt   = document.getElementById('prec-date').value;
+  const fib  = document.getElementById('prec-fib').value;
+  renderPrecRows(precAll.filter(r => {
+    if (dir  && r['Direction']    !== dir)  return false;
+    if (inst && r['Instrument']   !== inst) return false;
+    if (rat  && r['Rating']       !== rat)  return false;
+    if (dt   && !String(r['Date']).startsWith(dt)) return false;
+    if (fib  && String(r['Fib At Level?']) !== fib) return false;
+    if (q && !Object.values(r).join(' ').toLowerCase().includes(q)) return false;
+    return true;
+  }));
+}
+
+function renderPrecRows(rows) {
+  const valid = rows.filter(r => r['Instrument'] && r['Direction']);
+  const tbody = document.querySelector('#prec-table tbody');
+  if (!valid.length) { tbody.innerHTML = '<tr><td colspan="37" class="empty">No precision signals match</td></tr>'; return; }
+  tbody.innerHTML = valid.slice().reverse().map(r => {
+    const dir    = r['Direction'];
+    const score  = +r['Score /100'] || 0;
+    const sCls   = score >= 85 ? 'score-ultra' : score >= 75 ? 'score-high' : score >= 65 ? 'score-mid' : 'score-low';
+    const rating = String(r['Rating'] || '');
+    const rBadge = rating.includes('ULTRA') ? 'ULTRA' : rating.includes('STRONG') ? 'STRONG' : 'MEDIUM';
+    const fibHit = String(r['Fib At Level?']).toLowerCase() === 'yes';
+    const fibLv  = r['Fib Level'] || '—';
+    const fibPr  = r['Fib Price'] || '—';
+    const fibDs  = r['Fib Dist %'] || '—';
+    const st     = String(r['SuperTrend'] || '');
+    const stIcon = st === 'Bull' ? '<span style="color:var(--call)">↑ Bull</span>' : st === 'Bear' ? '<span style="color:var(--put)">↓ Bear</span>' : st;
+    const cpNarrow = String(r['CPR Narrow?'] || '');
+    return `<tr>
+      <td>${r['Date']||''}</td><td>${r['Time']||''}</td>
+      <td><strong>${r['Instrument']||''}</strong></td>
+      <td><span class="badge ${dir}">${dir}</span></td>
+      <td><strong>${r['Strike']||''}</strong></td><td>${r['Option']||''}</td>
+      <td><strong>${r['LTP']||''}</strong></td>
+      <td class="${sCls}">${score||''}</td>
+      <td><span class="badge ${rBadge}">${rating}</span></td>
+      <td style="color:var(--ultra);font-weight:600">${r['R:R']||''}</td>
+      <td>${r['Conds Met /8']||''}</td>
+      <td>${r['EMA9']||''}</td><td>${r['EMA21']||''}</td><td>${r['VWAP']||''}</td>
+      <td>${r['RSI(14)']||''}</td><td>${stIcon}</td>
+      <td>${r['ORB High']||''}</td><td>${r['ORB Low']||''}</td>
+      <td>${r['PDH']||''}</td><td>${r['PDL']||''}</td>
+      <td>${r['CPR Top']||''}</td><td>${r['CPR Bottom']||''}</td>
+      <td>${cpNarrow === 'Yes' ? '<span style="color:var(--call)">Yes</span>' : cpNarrow}</td>
+      <td class="${fibHit?'fib-hit':''}">${fibLv}</td>
+      <td class="${fibHit?'fib-hit':''}">${fibPr}</td>
+      <td>${fibDs}</td>
+      <td>${fibHit ? '<span class="fib-hit">✓ Yes</span>' : '<span style="color:var(--muted)">No</span>'}</td>
+      <td style="color:var(--put)">${r['SL Level']||''}</td><td>${r['SL Pts']||''}</td>
+      <td style="color:var(--call)">${r['Target Level']||''}</td><td>${r['Target Pts']||''}</td>
+      <td>${vixCell(r['VIX'])}</td><td>${pcrCell(r['PCR'])}</td>
+      <td>${r['Entry Premium']||''}</td><td>${r['Exit Premium']||''}</td>
+      <td>${r['P&L (Rs)']||''}</td>
+      <td class="result-${r['Result']||'PENDING'}">${r['Result']||''}</td>
+      <td style="max-width:160px;white-space:normal">${r['Notes']||''}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════════════
+//  VIX / PCR CELL HELPERS
+// ═══════════════════════════════════════════════════════
 function vixCell(v) {
   if (v === '' || v == null) return '—';
-  v = parseFloat(v);
-  if (isNaN(v)) return '—';
+  v = parseFloat(v); if (isNaN(v)) return '—';
   const color = v > 25 ? 'var(--put)' : v > 20 ? 'var(--warn)' : v < 12 ? 'var(--call)' : 'var(--muted)';
   const tag   = v > 25 ? '🔴' : v > 20 ? '🟠' : v < 12 ? '🟢' : '🟡';
   return `<span style="color:${color};font-weight:600">${tag} ${v.toFixed(1)}</span>`;
 }
 function pcrCell(p) {
   if (p === '' || p == null) return '—';
-  p = parseFloat(p);
-  if (isNaN(p)) return '—';
+  p = parseFloat(p); if (isNaN(p)) return '—';
   const color = p >= 1.2 ? 'var(--call)' : p <= 0.8 ? 'var(--put)' : 'var(--muted)';
   const tag   = p >= 1.5 ? '🟢🟢' : p >= 1.2 ? '🟢' : p <= 0.6 ? '🔴🔴' : p <= 0.8 ? '🔴' : '🟡';
   return `<span style="color:${color};font-weight:600">${tag} ${p.toFixed(2)}</span>`;
 }
 
-// ── Helpers ──────────────────────────────────────────────────────
-function buildTableHead(id, headers) {
-  document.querySelector('#'+id+' thead').innerHTML =
-    '<tr>' + headers.map(h=>`<th>${h}</th>`).join('') + '</tr>';
+// ═══════════════════════════════════════════════════════
+//  CHART / TABLE HELPERS
+// ═══════════════════════════════════════════════════════
+function dc(id, config) {
+  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+  charts[id] = new Chart(document.getElementById(id), config);
 }
 
-// ── Boot ─────────────────────────────────────────────────────────
+function chartOpts({ stacked=false, yMax, indexAxis }={}) {
+  return {
+    responsive: true, maintainAspectRatio: true,
+    indexAxis: indexAxis || 'x',
+    plugins: { legend: { labels: { color:'#8b949e', font:{size:11} } } },
+    scales: {
+      x: { stacked, ticks:{color:'#8b949e',font:{size:10}}, grid:{color:'rgba(48,54,61,.8)'} },
+      y: { stacked, max: yMax, ticks:{color:'#8b949e',font:{size:10}}, grid:{color:'rgba(48,54,61,.8)'} }
+    }
+  };
+}
+
+function buildTableHead(id, headers, prec) {
+  const tr = '<tr>' + headers.map(h=>`<th>${h}</th>`).join('') + '</tr>';
+  const thead = document.querySelector('#' + id + ' thead');
+  thead.innerHTML = tr;
+  if (prec) thead.classList.add('prec'); else thead.classList.remove('prec');
+}
+
+function uniqueDates(rows, col) {
+  return [...new Set(rows.map(r=>String(r[col]).slice(0,10)).filter(Boolean))].sort().reverse();
+}
+
+function pct(n, total) { return total ? Math.round(n/total*100) : 0; }
+function todayDate() { return new Date().toLocaleDateString('en-CA', { timeZone:'Asia/Kolkata' }); }
+
+// ═══════════════════════════════════════════════════════
+//  BOOT
+// ═══════════════════════════════════════════════════════
 (async () => {
   try {
-    await loadExcel();
+    await loadAll();
     renderOverview();
     renderSignals();
     renderScans();
     renderSummary();
+    renderPrecOverview();
+    renderPrecSignals();
   } catch(e) {
     document.querySelector('.container').insertAdjacentHTML('afterbegin',
       `<div class="error-box">⚠ ${e.message}</div>`);
