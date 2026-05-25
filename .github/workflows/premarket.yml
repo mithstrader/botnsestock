@@ -48,4 +48,5 @@ jobs:
           git add logs/*.xlsx 2>/dev/null || true
           git diff --cached --quiet && echo "No pre-open data to commit" && exit 0
           git commit -m "logs: pre-market scan $(date +'%Y-%m-%d %H:%M UTC')"
+          git pull --rebase origin master
           git push

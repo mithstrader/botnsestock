@@ -6,6 +6,12 @@ on:
     - cron: "05 4 * * 1-5"
 
   workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'Run in TEST mode (quick ping, no scan)'
+        required: false
+        default: 'false'
+        type: string
 
 permissions:
   contents: write
@@ -47,4 +53,5 @@ jobs:
           git add logs/*.xlsx 2>/dev/null || true
           git diff --cached --quiet && echo "No new data" && exit 0
           git commit -m "logs: nifty precision signals $(date +'%Y-%m-%d')"
+          git pull --rebase origin master
           git push
