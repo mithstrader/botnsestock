@@ -61,10 +61,15 @@ MIN_SCORE_TO_ALERT   =  30.0   # Minimum score to trigger an alert
                                # score is 65/100 (day=35 + OI=30). 30 ≈ 46% of that cap,
                                # equivalent to the 40% bar used on full-day scores.
 SCORE_JUMP_TO_ALERT  =  15.0   # Re-alert if score jumps by this much
-MAX_RISK_PER_TRADE   =  1500   # Rs
+MAX_RISK_PER_TRADE   =  1500   # Rs max risk per trade
 DAILY_LOSS_LIMIT     =  3000   # Rs
 MAX_TRADES_PER_DAY   =  10
 MONTHLY_TARGET       = (8000, 12000)
+
+# ─── SL / Target calculation (stock price levels) ─────────────────
+SL_PCT     = 1.5   # % move against signal → stop loss (e.g. CALL: LTP × 0.985)
+TARGET_PCT = 3.0   # % move with signal   → target    (e.g. CALL: LTP × 1.030)
+                   # Risk : Reward = 1 : 2  (SL_PCT : TARGET_PCT)
 
 # ─── Excel logging ────────────────────────────────────────────────
 ENABLE_EXCEL_LOG   = True          # Save results to Excel
@@ -323,9 +328,13 @@ EXCEL_FILE = os.path.join(EXCEL_FOLDER, "NSE_Bot_Master.xlsx")
 _SIG_HEADERS = [
     "Date", "Time", "Symbol", "Direction", "LTP (Rs)",
     "Day Chg %", "Vol Surge %", "OI Build %", "Score /100",
-    "Buildup", "Signal Type", "Tag", "Suggested Strike", "SL (Rs)", "Target (Rs)",
+    "Buildup", "Signal Type", "Tag", "Suggested Strike",
+    "SL Price",        # col 14 — stock price at stop loss  (LTP ± SL_PCT%)
+    "Target Price",    # col 15 — stock price at target     (LTP ± TARGET_PCT%)
     "Session", "Market Activity",
-    "Entry Premium", "Exit Premium", "P&L (Rs)", "Result", "Notes",
+    "Entry Premium", "Exit Premium", "P&L (Rs)",
+    "Trade Outcome",   # col 21 — TP / SL / SKIP / PENDING
+    "Notes",
     "India VIX", "Nifty PCR"
 ]
 _SCAN_HEADERS = [
@@ -371,18 +380,36 @@ def _load_or_create_wb():
 
     if os.path.exists(EXCEL_FILE):
         wb = openpyxl.load_workbook(EXCEL_FILE)
-        # ── Migrate: add VIX / PCR header columns if not present ──
         if "Signals" in wb.sheetnames:
             ws_sig = wb["Signals"]
             last_col = ws_sig.max_column
             headers_present = [ws_sig.cell(1, c).value for c in range(1, last_col + 1)]
+            migrated = False
+
+            # ── Migrate: rename SL/Target/Result columns ──────────
+            _renames = {
+                "SL (Rs)"     : "SL Price",
+                "Target (Rs)" : "Target Price",
+                "Result"      : "Trade Outcome",
+            }
+            for col_idx in range(1, last_col + 1):
+                old_hdr = ws_sig.cell(1, col_idx).value
+                if old_hdr in _renames:
+                    ws_sig.cell(1, col_idx).value = _renames[old_hdr]
+                    migrated = True
+                    print(f"[EXCEL] Migrated: '{old_hdr}' → '{_renames[old_hdr]}'")
+
+            # ── Migrate: add VIX / PCR header columns if not present ──
             if "India VIX" not in headers_present:
                 for col, title in [(last_col + 1, "India VIX"),
                                    (last_col + 2, "Nifty PCR")]:
                     _header_style(ws_sig.cell(1, col), title)
                     ws_sig.column_dimensions[get_column_letter(col)].width = 10
-                wb.save(EXCEL_FILE)
+                migrated = True
                 print("[EXCEL] Migrated: added India VIX + Nifty PCR columns.")
+
+            if migrated:
+                wb.save(EXCEL_FILE)
         return wb
 
     wb  = openpyxl.Workbook()
@@ -446,15 +473,25 @@ def excel_log_signals(picks, activity, session, expiry):
             bg     = _C["new_bg"] if is_new else _C["strong_bg"]
             fg     = _C["call_fg"] if d == "CALL" else _C["put_fg"]
 
+            ltp = s["ltp"]
+            # Calculate actual stock price levels for SL and Target
+            if d == "CALL":
+                sl_price     = round(ltp * (1 - SL_PCT     / 100), 2)
+                target_price = round(ltp * (1 + TARGET_PCT  / 100), 2)
+            else:   # PUT
+                sl_price     = round(ltp * (1 + SL_PCT     / 100), 2)
+                target_price = round(ltp * (1 - TARGET_PCT  / 100), 2)
+
             row_vals = [
                 date_str, time_str, s["symbol"], d,
-                s["ltp"],
+                ltp,
                 round(s["day_change"], 2),
                 round(s["vol_change"], 1),
                 round(s["oi_change"],  2),
                 s["score"], s.get("buildup",""), s.get("signal_type","NORMAL"), tag,
                 f"ATM or 1 OTM {d}",
-                MAX_RISK_PER_TRADE, MAX_RISK_PER_TRADE * 2,
+                sl_price,     # actual stop-loss price level
+                target_price, # actual target price level
                 session, round(activity, 1),
                 "", "", "", "PENDING", "",
                 _market_context.get("vix") or "",
@@ -884,18 +921,29 @@ def signal_message(picks, expiry, activity, updated_at):
         pcr_b = s.get("pcr_bonus", 0)
         pcr_b_str = (f"   PCR Boost: `{pcr_b:+.0f} pts` ({'↑ confirms' if pcr_b > 0 else '↓ conflicts'})\n"
                      if pcr_b != 0 else "")
+        # Calculate actual SL / Target stock price levels
+        ltp = s['ltp']
+        if s['direction'] == 'CALL':
+            sl_price  = round(ltp * (1 - SL_PCT    / 100), 1)
+            tgt_price = round(ltp * (1 + TARGET_PCT / 100), 1)
+        else:
+            sl_price  = round(ltp * (1 + SL_PCT    / 100), 1)
+            tgt_price = round(ltp * (1 - TARGET_PCT / 100), 1)
+        move_pts  = round(abs(tgt_price - ltp), 1)
+
         msg += (
             f"{icon} *{s['symbol']} — {s['direction']}*  {tag}\n"
-            f"   LTP      : Rs {s['ltp']:,.1f}\n"
+            f"   LTP      : Rs {ltp:,.1f}\n"
             f"   Lot Size : {s['lot_size']:,}\n"
             f"   Day Chg  : {sign}{s['day_change']:.2f}%\n"
             f"   Vol Surge: {s['vol_change']:+.1f}%\n"
             f"   OI Build : +{s['oi_change']:.2f}%\n"
             f"   Score    : *{s['score']}/100*\n"
-            f"{pcr_b_str}\n"
-            f"   📌 Strike: ATM or 1 OTM {s['direction']}\n"
-            f"   🛑 SL    : Rs {MAX_RISK_PER_TRADE:,} max loss\n"
-            f"   🎯 Target: Rs {MAX_RISK_PER_TRADE * 2:,} profit\n"
+            f"{pcr_b_str}"
+            f"   📌 Strike : ATM or 1 OTM {s['direction']}\n"
+            f"   🛑 SL     : Rs {sl_price:,.1f}  ({SL_PCT:.1f}% away)\n"
+            f"   🎯 Target : Rs {tgt_price:,.1f}  (+{move_pts:,.1f} pts, {TARGET_PCT:.1f}%)\n"
+            f"   💰 Max Risk: Rs {MAX_RISK_PER_TRADE:,}\n"
             f"`{line}`\n\n"
         )
 
@@ -1835,15 +1883,22 @@ def excel_update_result(symbol, result, pnl=None, entry=None, exit_p=None, notes
         if not target_row:
             return False
 
-        # P&L columns: 16=Entry, 17=Exit, 18=P&L, 19=Result, 20=Notes
-        updates = {16: entry, 17: exit_p, 18: pnl, 19: result, 20: notes}
+        # Col layout: 18=Entry Premium, 19=Exit Premium, 20=P&L, 21=Trade Outcome, 22=Notes
+        # Normalise legacy WIN/LOSS → TP/SL
+        outcome = result
+        if outcome == "WIN":  outcome = "TP"
+        if outcome == "LOSS": outcome = "SL"
+
+        # Color scheme: TP=green, SL=red, SKIP=grey, PENDING=white
+        _fg = {"TP": "276221", "SL": "9C0006", "SKIP": "595959"}.get(outcome, "000000")
+        _bg = {"TP": "C6EFCE", "SL": "FFC7CE", "SKIP": "F2F2F2"}.get(outcome, "FFFFFF")
+
+        updates = {18: entry, 19: exit_p, 20: pnl, 21: outcome, 22: notes}
         for col, val in updates.items():
             if val is not None:
                 cell = ws.cell(target_row, col, value=val)
-                cell.font      = Font(name="Arial", size=10,
-                    color=("276221" if result=="WIN" else "9C0006" if result=="LOSS" else "000000"))
-                cell.fill      = PatternFill("solid",
-                    fgColor=("C6EFCE" if result=="WIN" else "FFC7CE" if result=="LOSS" else "F2F2F2"))
+                cell.font      = Font(name="Arial", size=10, bold=(col == 21), color=_fg)
+                cell.fill      = PatternFill("solid", fgColor=_bg)
                 cell.alignment = Alignment(horizontal="center", vertical="center")
                 cell.border    = _thin_border()
 
@@ -1873,30 +1928,31 @@ def weekly_report():
         week_ago = (today - timedelta(days=7)).strftime("%Y-%m-%d")
         today_s  = today.strftime("%Y-%m-%d")
 
+        # Col indices (0-based): Trade Outcome=20, P&L=19, Session=15
         rows = [r for r in ws.iter_rows(min_row=2, values_only=True)
                 if r[0] and isinstance(r[0], str)
                 and week_ago <= r[0] <= today_s
-                and r[18] is not None]
+                and r[20] is not None and r[20] != "PENDING"]
 
         if not rows:
-            return "Weekly Report\n\nNo completed trades this week.\nTip: Reply WIN/LOSS to signals to track results."
+            return "Weekly Report\n\nNo completed trades this week.\nTip: Reply TP/SL/SKIP to signals to track results."
 
-        win_ct    = sum(1 for r in rows if r[18] == "WIN")
-        loss_ct   = sum(1 for r in rows if r[18] == "LOSS")
-        skip_ct   = sum(1 for r in rows if r[18] == "SKIP")
+        win_ct    = sum(1 for r in rows if r[20] in ("TP", "WIN"))
+        loss_ct   = sum(1 for r in rows if r[20] in ("SL", "LOSS"))
+        skip_ct   = sum(1 for r in rows if r[20] == "SKIP")
         total     = len(rows)
-        total_pnl = sum(r[17] for r in rows if isinstance(r[17], (int, float)))
+        total_pnl = sum(r[19] for r in rows if isinstance(r[19], (int, float)))
         win_rate  = round(win_ct / (win_ct + loss_ct) * 100) if (win_ct + loss_ct) > 0 else 0
 
         pnl_by_stock = {}
         for r in rows:
-            sym = r[2]; p = r[17] if isinstance(r[17], (int,float)) else 0
+            sym = r[2]; p = r[19] if isinstance(r[19], (int,float)) else 0
             pnl_by_stock[sym] = pnl_by_stock.get(sym, 0) + p
         best_sym  = max(pnl_by_stock, key=pnl_by_stock.get) if pnl_by_stock else "-"
 
         sess_pnl  = {}
         for r in rows:
-            s = r[13] or "?"; p = r[17] if isinstance(r[17], (int,float)) else 0
+            s = r[15] or "?"; p = r[19] if isinstance(r[19], (int,float)) else 0
             sess_pnl[s] = sess_pnl.get(s, 0) + p
         best_sess = max(sess_pnl, key=sess_pnl.get) if sess_pnl else "-"
 
@@ -1917,8 +1973,8 @@ def weekly_report():
         month_start = today.strftime("%Y-%m-01")
         month_rows  = [r for r in ws.iter_rows(min_row=2, values_only=True)
                        if r[0] and isinstance(r[0], str) and r[0] >= month_start
-                       and isinstance(r[17], (int, float))]
-        month_pnl = sum(r[17] for r in month_rows)
+                       and isinstance(r[19], (int, float))]
+        month_pnl = sum(r[19] for r in month_rows)
         progress  = min(int(month_pnl / MONTHLY_TARGET[1] * 10), 10) if MONTHLY_TARGET[1] else 0
         bar       = "#" * progress + "." * (10 - progress)
 
@@ -1940,11 +1996,12 @@ def auto_tune():
     try:
         wb   = openpyxl.load_workbook(EXCEL_FILE)
         ws   = wb["Signals"]
+        # Col indices (0-based): Trade Outcome=20, P&L=19, Score=8
         rows = [r for r in ws.iter_rows(min_row=2, values_only=True)
-                if r[18] in ("WIN", "LOSS") and isinstance(r[8], (int, float))]
+                if r[20] in ("TP", "SL", "WIN", "LOSS") and isinstance(r[8], (int, float))]
 
         if len(rows) < 10:
-            return ("Auto-Tune\n\nNeed at least 10 WIN/LOSS trades.\n"
+            return ("Auto-Tune\n\nNeed at least 10 TP/SL trades.\n"
                     "Currently have: " + str(len(rows)) + "\nKeep logging results.")
 
         buckets = {}
@@ -1952,12 +2009,12 @@ def auto_tune():
             b = (int(r[8]) // 10) * 10
             if b not in buckets:
                 buckets[b] = {"win": 0, "loss": 0, "pnl": 0}
-            if r[18] == "WIN":
+            if r[20] in ("TP", "WIN"):
                 buckets[b]["win"]  += 1
             else:
                 buckets[b]["loss"] += 1
-            if isinstance(r[17], (int, float)):
-                buckets[b]["pnl"] += r[17]
+            if isinstance(r[19], (int, float)):
+                buckets[b]["pnl"] += r[19]
 
         msg  = "Auto-Tune Analysis\n----------------------------\n\n"
         msg += "{:<10} {:<8} {:<8} {}\n".format("Score", "Trades", "Win%", "P&L")
@@ -1994,21 +2051,21 @@ def process_command(text, username=""):
         return None
     cmd = parts[0]
 
-    # ── WIN [SYMBOL] AMOUNT ───────────────────────────────────────
-    if cmd == "WIN":
+    # ── TP / WIN [SYMBOL] AMOUNT ──────────────────────────────────
+    if cmd in ("TP", "WIN"):
         sym = parts[1] if len(parts) == 3 else ((list(state["alerted_today"]) or ["?"])[-1])
         pnl = float(parts[-1]) if parts[-1].replace(".","").isdigit() else None
-        excel_update_result(sym, "WIN", pnl=pnl)
-        reply = "WIN logged for " + sym
+        excel_update_result(sym, "TP", pnl=pnl)
+        reply = "✅ TP logged for " + sym
         if pnl: reply += "  |  P&L: Rs +" + "{:,.0f}".format(pnl)
         return reply
 
-    # ── LOSS [SYMBOL] AMOUNT ──────────────────────────────────────
-    if cmd == "LOSS":
+    # ── SL / LOSS [SYMBOL] AMOUNT ─────────────────────────────────
+    if cmd in ("SL", "LOSS"):
         sym = parts[1] if len(parts) == 3 else ((list(state["alerted_today"]) or ["?"])[-1])
         pnl = -abs(float(parts[-1])) if parts[-1].replace(".","").isdigit() else None
-        excel_update_result(sym, "LOSS", pnl=pnl)
-        reply = "LOSS logged for " + sym
+        excel_update_result(sym, "SL", pnl=pnl)
+        reply = "🔴 SL logged for " + sym
         if pnl: reply += "  |  P&L: Rs " + "{:,.0f}".format(pnl)
         return reply
 
@@ -2016,7 +2073,7 @@ def process_command(text, username=""):
     if cmd == "SKIP":
         sym = parts[1] if len(parts) > 1 else ((list(state["alerted_today"]) or ["?"])[-1])
         excel_update_result(sym, "SKIP")
-        return "SKIP logged for " + sym
+        return "⏭ SKIP logged for " + sym
 
     # ── ENTRY AMOUNT [SYMBOL] ─────────────────────────────────────
     if cmd == "ENTRY" and len(parts) >= 2:
