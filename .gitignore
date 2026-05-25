@@ -1,0 +1,11 @@
+# Local token file — never commit this
+bot_token.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Local logs (only Excel in /logs/ goes to repo)
+*.log
