@@ -2173,30 +2173,13 @@ if __name__ == "__main__":
 
     IST_NOW = ist_now()
 
-    # ── Guard: exit immediately if started outside market window ────
-    # Prevents GitHub Actions cron-delay from wasting 6-hour job slots
-    _mins_now = IST_NOW.hour * 60 + IST_NOW.minute
-    _is_weekday = IST_NOW.weekday() < 5
-    _after_close = _mins_now > 15 * 60 + 35   # After 3:35 PM IST
-    _before_preopen = _mins_now < 9 * 60 + 5   # Before 9:05 AM IST
+    # ── Test mode — runs regardless of market hours / day ───────────
+    TEST_MODE = (os.environ.get("TEST_MODE", "false").lower() == "true"
+                 or (len(sys.argv) > 1 and sys.argv[1] == 'test'))
 
-    if not _is_weekday:
-        print(f"[{IST_NOW.strftime('%A %H:%M')} IST] Weekend — bot exiting.")
-        sys.exit(0)
-
-    if _after_close or _before_preopen:
-        print(f"[{IST_NOW.strftime('%H:%M')} IST] Outside market window — bot exiting.")
-        sys.exit(0)
-
-    # ── Pre-market only mode (separate GitHub Actions job) ──────────
-    PREMARKET_ONLY = os.environ.get("PREMARKET_ONLY", "false").lower() == "true"
-    if PREMARKET_ONLY:
-        print(f"[{IST_NOW.strftime('%H:%M')} IST] Running pre-market scan only...")
-        _warm_nse_session()
-        refresh_market_context(force=True)
-        premarket_scan()
-        print("[PREMARKET] Done. Exiting.")
-        sys.exit(0)
+    if TEST_MODE:
+        if len(sys.argv) <= 1:
+            sys.argv.append('test')   # reuse existing test block below
 
     if len(sys.argv) > 1 and sys.argv[1] == 'test':
         print("🧪 Test mode...")
@@ -2230,6 +2213,29 @@ if __name__ == "__main__":
             send_telegram(msg)
         else:
             send_telegram("⚠️ Test failed — data fetch error.")
+        sys.exit(0)
+
+    # ── Guard: exit immediately if started outside market window ────
+    _mins_now   = IST_NOW.hour * 60 + IST_NOW.minute
+    _is_weekday = IST_NOW.weekday() < 5
+    _after_close    = _mins_now > 15 * 60 + 35
+    _before_preopen = _mins_now < 9 * 60 + 5
+
+    if not _is_weekday:
+        print(f"[{IST_NOW.strftime('%A %H:%M')} IST] Weekend — bot exiting.")
+        sys.exit(0)
+    if _after_close or _before_preopen:
+        print(f"[{IST_NOW.strftime('%H:%M')} IST] Outside market window — bot exiting.")
+        sys.exit(0)
+
+    # ── Pre-market only mode ─────────────────────────────────────────
+    PREMARKET_ONLY = os.environ.get("PREMARKET_ONLY", "false").lower() == "true"
+    if PREMARKET_ONLY:
+        print(f"[{IST_NOW.strftime('%H:%M')} IST] Running pre-market scan only...")
+        _warm_nse_session()
+        refresh_market_context(force=True)
+        premarket_scan()
+        print("[PREMARKET] Done. Exiting.")
         sys.exit(0)
 
     reset_daily_state()
