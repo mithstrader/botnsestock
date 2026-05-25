@@ -55,7 +55,11 @@ MIN_VOL_CHANGE       = -999.0  # Volume check removed as hard gate — used only
                                # Trendlyne volume % compares to FULL previous day,
                                # so morning scans always show negative values
 MIN_OI_CHANGE        =   2.0   # % min OI build to qualify
-MIN_SCORE_TO_ALERT   =  40.0   # Minimum score to trigger an alert
+MIN_SCORE_TO_ALERT   =  30.0   # Minimum score to trigger an alert
+                               # Note: vol_change is always ~0 in morning scans (Trendlyne
+                               # compares intraday volume to previous full day), so max morning
+                               # score is 65/100 (day=35 + OI=30). 30 ≈ 46% of that cap,
+                               # equivalent to the 40% bar used on full-day scores.
 SCORE_JUMP_TO_ALERT  =  15.0   # Re-alert if score jumps by this much
 MAX_RISK_PER_TRADE   =  1500   # Rs
 DAILY_LOSS_LIMIT     =  3000   # Rs
@@ -1743,6 +1747,24 @@ def scan_job():
         sc = compute_score(s)
         if sc > 0:
             state['last_scores'][s['symbol']] = sc
+
+    # ── Debug: show top 5 candidates every scan ───────────────────
+    _candidates = []
+    for s in stocks:
+        b  = s.get('buildup', '')
+        dc = s.get('day_change', 0)
+        if (b == 'Long Build Up' and dc >= MIN_DAY_CHANGE_LONG) or \
+           (b == 'Short Build Up' and dc <= MIN_DAY_CHANGE_SHORT):
+            sc = compute_score(s)
+            _candidates.append((s['symbol'], dc, s.get('oi_change',0), s.get('vol_change',0), sc, b))
+    _candidates.sort(key=lambda x: x[4], reverse=True)
+    if _candidates:
+        print(f"[DEBUG] Top candidates (threshold={MIN_SCORE_TO_ALERT}):")
+        for sym, dc, oic, vc, sc, bu in _candidates[:5]:
+            flag = "✓ SIGNAL" if sc >= MIN_SCORE_TO_ALERT else f"✗ score<{MIN_SCORE_TO_ALERT}"
+            print(f"  {sym}: dc={dc:+.2f}% oic={oic:.1f}% vc={vc:.0f}% score={sc} [{bu[:3]}] {flag}")
+    else:
+        print(f"[DEBUG] No qualifying buildup/direction stocks this scan.")
 
     if not picks:
         print(f"[INFO] No new signals. Alerted: {state['alerted_today']}")
