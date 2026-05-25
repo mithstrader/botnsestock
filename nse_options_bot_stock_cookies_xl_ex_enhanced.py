@@ -51,7 +51,9 @@ DESKTOP_NOTIFY_SOUND    = not _CI  # Play a beep with the notification
 # ─── Your Trading Rules ────────────────────────────────────────────
 MIN_DAY_CHANGE_LONG  =  1.5    # % min rise  → CALL signal
 MIN_DAY_CHANGE_SHORT = -1.5    # % min fall  → PUT  signal
-MIN_VOL_CHANGE       =  30.0   # % min volume surge to qualify
+MIN_VOL_CHANGE       = -999.0  # Volume check removed as hard gate — used only in scoring
+                               # Trendlyne volume % compares to FULL previous day,
+                               # so morning scans always show negative values
 MIN_OI_CHANGE        =   2.0   # % min OI build to qualify
 MIN_SCORE_TO_ALERT   =  40.0   # Minimum score to trigger an alert
 SCORE_JUMP_TO_ALERT  =  15.0   # Re-alert if score jumps by this much
