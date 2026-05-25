@@ -7,6 +7,12 @@ on:
     - cron: "00 4 * * 1-5"
 
   workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'Run in TEST mode (quick ping, no market scan)'
+        required: false
+        default: 'false'
+        type: string
 
 permissions:
   contents: write
@@ -39,9 +45,8 @@ jobs:
 
       - name: Run NSE bot (market session)
         env:
-          # On manual triggers (workflow_dispatch) run in test mode so it
-          # works on weekends / outside market hours for verification
-          TEST_MODE: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+          # workflow_dispatch: defaults to live scan; pass test_mode=true for a quick ping
+          TEST_MODE: ${{ inputs.test_mode || 'false' }}
         run: python nse_options_bot_stock_cookies_xl_ex_enhanced.py
 
       - name: Commit and push Excel logs to repo
