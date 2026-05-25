@@ -1470,6 +1470,15 @@ def premarket_scan():
 
     print(f"[{now.strftime('%H:%M:%S')}] Pre-market combined scan running...")
 
+    # ── Notify on Telegram that scan has started ──────────────────
+    send_telegram(
+        f"🔔 *PRE-MARKET SCAN STARTED*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🕐 {now.strftime('%d %b %Y  %I:%M %p')} IST\n"
+        f"📋 Fetching NSE pre-open data + OI gainers...\n"
+        f"_Full setup alert will follow in ~30 seconds_"
+    )
+
     # ── Fetch VIX + PCR first (force refresh at market open) ─────
     refresh_market_context(force=True)
 
@@ -1524,21 +1533,26 @@ def premarket_scan():
     unch = len(pre_stocks) - adv - dec
     breadth_bias = "BULLISH" if adv > dec * 1.5 else "BEARISH" if dec > adv * 1.5 else "MIXED"
 
-    msg  = "PRE-MARKET SETUP ALERT\n"
-    msg += "Time: " + now.strftime("%H:%M") + " IST  |  Expiry: " + expiry + "\n"
-    msg += "F&O Breadth: ADV " + str(adv) + "  DEC " + str(dec) + "  UNCH " + str(unch)
-    msg += "  (" + breadth_bias + ")\n"
-    msg += "India VIX  : " + vix_label() + "\n"
-    msg += "Nifty PCR  : " + pcr_label() + "\n"
-    # VIX warning
+    breadth_icon = "🟢" if breadth_bias == "BULLISH" else "🔴" if breadth_bias == "BEARISH" else "🟡"
     vix_d, vix_blk = get_vix_threshold_delta()
+
+    msg  = "📊 *PRE-MARKET SETUP ALERT*\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += "🕐 " + now.strftime("%d %b %Y  %I:%M %p") + " IST\n"
+    msg += "📅 Expiry    : " + expiry + "\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += breadth_icon + " Breadth    : ADV " + str(adv) + "  DEC " + str(dec) + "  UNCH " + str(unch)
+    msg += "  (" + breadth_bias + ")\n"
+    msg += "📈 India VIX : " + vix_label() + "\n"
+    msg += "⚖️ Nifty PCR : " + pcr_label() + "\n"
+    # VIX warning
     if vix_blk:
-        msg += "WARNING: VIX EXTREME — wait for market to settle before trading\n"
+        msg += "⚠️ *VIX EXTREME* — wait for market to settle before trading\n"
     elif vix_d > 0:
-        msg += f"Note: High VIX — score bar raised by {vix_d:.0f} pts today\n"
+        msg += f"⚠️ High VIX — score bar raised by {vix_d:.0f} pts today\n"
     elif vix_d < 0:
-        msg += "Note: Low VIX — calm market, thresholds slightly eased\n"
-    msg += "----------------------------\n\n"
+        msg += "✅ Low VIX — calm market, thresholds slightly eased\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━━\n\n"
 
     total_signals = 0
 
@@ -2287,6 +2301,27 @@ if __name__ == "__main__":
 
     # Warm NSE session for pre-open data
     _warm_nse_session()
+
+    # ── Startup Telegram notification ────────────────────────────
+    refresh_market_context(force=True)
+    _now_ist  = ist_now()
+    _session  = classify_session()
+    _exit_at  = "15:28 IST"
+    _vix_txt  = vix_label()
+    _pcr_txt  = pcr_label()
+    send_telegram(
+        f"🟢 *NSE Options Bot — STARTED*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🕐 Time      : {_now_ist.strftime('%d %b %Y  %I:%M %p')} IST\n"
+        f"📊 Session   : {_session}\n"
+        f"⏱ Scan every : {SCAN_INTERVAL_MIN} minutes\n"
+        f"🎯 Min score  : {MIN_SCORE_TO_ALERT}/100\n"
+        f"📈 India VIX  : {_vix_txt}\n"
+        f"⚖️ Nifty PCR  : {_pcr_txt}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Bot will scan stocks until {_exit_at}.\n"
+        f"_Commands: STATUS · WIN · LOSS · SKIP · TUNE_"
+    )
 
     # Start background Telegram command listener
     start_telegram_listener()
