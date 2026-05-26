@@ -1828,6 +1828,44 @@ def scan_job():
     else:
         print(f"[DEBUG] No qualifying buildup/direction stocks this scan.")
 
+    # ── Telegram scan heartbeat (every scan) ──────────────────────
+    _time_str = now.strftime('%I:%M %p')
+    _act_bar  = "▓" * int(activity / 20) + "░" * (5 - int(activity / 20))
+    _vix_d, _vix_blk = get_vix_threshold_delta()
+    _eff_thresh = int(MIN_SCORE_TO_ALERT + _vix_d)
+
+    if picks:
+        _result_line = f"✅ *SIGNAL FIRED* — {', '.join(p['symbol'] for p in picks)}"
+    elif _candidates:
+        top = _candidates[0]
+        _gap = _eff_thresh - top[4]  # how many pts away from threshold
+        _dir = "🟢" if top[5].startswith("Long") else "🔴"
+        _result_line = (
+            f"⏭ No signal  _(closest: {_dir}{top[0]}  score `{top[4]:.0f}`"
+            f"  needs `{_eff_thresh}`)_"
+        )
+    else:
+        _result_line = f"⏭ No qualifying stocks  _(need dc≥{MIN_DAY_CHANGE_LONG}% + OI≥{MIN_OI_CHANGE}%)_"
+
+    _top_lines = ""
+    for sym, dc, oic, vc, sc, bu in _candidates[:3]:
+        _dir_ic = "🟢" if bu.startswith("Long") else "🔴"
+        _bar = "█" * int(sc / 10) + "░" * (10 - int(sc / 10))
+        _top_lines += f"  {_dir_ic} `{sym:<12}` dc`{dc:+.1f}%` OI`+{oic:.1f}%` score`{sc:.0f}/{_eff_thresh}`\n"
+
+    _tg_scan_msg = (
+        f"🔍 *Scan #{state['scan_count']}*  ·  {_time_str} IST  ·  {session}\n"
+        f"📦 {len(stocks)} stocks  ·  Activity `{_act_bar}` `{activity:.0f}/100`\n"
+    )
+    if _vix_blk:
+        _tg_scan_msg += f"⛔ VIX EXTREME — signals blocked\n"
+    elif _vix_d != 0:
+        _tg_scan_msg += f"⚠️ VIX adj: threshold raised to `{_eff_thresh}`\n"
+    if _top_lines:
+        _tg_scan_msg += f"📊 Top candidates:\n{_top_lines}"
+    _tg_scan_msg += _result_line
+    send_telegram(_tg_scan_msg)
+
     if not picks:
         print(f"[INFO] No new signals. Alerted: {state['alerted_today']}")
         return
