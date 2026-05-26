@@ -1,6 +1,7 @@
 # Local secret files — never commit these
 bot_token.txt
 local_creds.cmd
+run_local.py
 
 # Python
 __pycache__/
