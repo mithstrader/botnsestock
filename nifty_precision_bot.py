@@ -879,8 +879,9 @@ def scan():
         return
 
     state["scan_count"] += 1
+    now_str = datetime.now(IST).strftime("%H:%M IST")
     print(f"\n{'─'*55}")
-    print(f"[SCAN #{state['scan_count']}] {datetime.now(IST).strftime('%H:%M IST')}")
+    print(f"[SCAN #{state['scan_count']}] {now_str}")
 
     # Heartbeat every N scans so user knows bot is alive even with no signals
     if state["scan_count"] % HEARTBEAT_SCANS == 0:
@@ -889,13 +890,21 @@ def scan():
     refresh_vix_pcr()
 
     if state["vix"] and state["vix"] > VIX_EXTREME:
-        print(f"[BLOCK] VIX={state['vix']:.1f} — extreme volatility, skipping all signals")
+        vix_msg = f"⛔ VIX={state['vix']:.1f} EXTREME — all signals blocked"
+        print(f"[BLOCK] {vix_msg}")
+        send_telegram(
+            f"🔍 *Scan #{state['scan_count']}* | {now_str}\n\n"
+            f"{vix_msg}\n_Waiting for VIX to calm below {VIX_EXTREME}_"
+        )
         return
+
+    scan_results = []   # collect per-instrument results for summary
 
     for name, cfg in INSTRUMENTS.items():
         try:
             sig = analyze(name, cfg)
             if sig is None:
+                scan_results.append((name, None, "NO DATA", 0, "—"))
                 continue
 
             state["scores_seen"].append(sig["score"])
@@ -910,43 +919,99 @@ def scan():
                 mark = "✓" if v is True else ("✗" if v is False else "·")
                 print(f"      {mark} {k}: {v}")
 
-            if sig["rating"] in ("WEAK", "MEDIUM") and sig["score"] < cfg["min_score"]:
-                print(f"      [SKIP] Score {sig['score']} < threshold {cfg['min_score']}")
-                continue
+            alerted = False
 
-            # Suppress duplicate signal
-            now = datetime.now(IST)
-            last = state["last_signal"].get(name, {})
-            if last:
-                elapsed = (now - last["time"]).total_seconds() / 60
-                same_dir = last["direction"] == sig["direction"]
-                if same_dir and elapsed < RESIGAL_GAP_MIN and sig["score"] < last["score"] + 10:
-                    print(f"      [SKIP] Same dir, {elapsed:.0f}m ago, score not improved")
-                    continue
+            if not (sig["rating"] in ("WEAK", "MEDIUM") and sig["score"] < cfg["min_score"]):
+                # Suppress duplicate signal
+                now = datetime.now(IST)
+                last = state["last_signal"].get(name, {})
+                suppress = False
+                if last:
+                    elapsed  = (now - last["time"]).total_seconds() / 60
+                    same_dir = last["direction"] == sig["direction"]
+                    if same_dir and elapsed < RESIGAL_GAP_MIN and sig["score"] < last["score"] + 10:
+                        print(f"      [SKIP] Same dir, {elapsed:.0f}m ago, score not improved")
+                        suppress = True
 
-            # Send alert
-            msg = format_signal(sig)
-            send_telegram(msg)
-            log_excel(sig)
+                if not suppress:
+                    msg = format_signal(sig)
+                    send_telegram(msg)
+                    log_excel(sig)
+                    desk_title = f"{name} {sig['direction']} {sig['rating']}"
+                    desk_body  = (f"LTP {sig['ltp']:,.0f} | Score {sig['score']} | "
+                                  f"SL {sig['sl_level']:,.0f} → T {sig['target_level']:,.0f} ({sig['rr']})")
+                    send_desktop(desk_title, desk_body, urgent=(sig["score"] >= SCORE_ULTRA))
+                    state["last_signal"][name] = {
+                        "direction": sig["direction"],
+                        "score":     sig["score"],
+                        "time":      now,
+                    }
+                    state["alerts_sent"]  += 1
+                    state["trades_today"] += 1
+                    print(f"      [ALERTED] {name} {sig['direction']} {sig['score']}/100")
+                    alerted = True
 
-            desk_title = f"{name} {sig['direction']} {sig['rating']}"
-            desk_body  = (f"LTP {sig['ltp']:,.0f} | Score {sig['score']} | "
-                          f"SL {sig['sl_level']:,.0f} → T {sig['target_level']:,.0f} ({sig['rr']})")
-            send_desktop(desk_title, desk_body, urgent=(sig["score"] >= SCORE_ULTRA))
-
-            state["last_signal"][name] = {
-                "direction": sig["direction"],
-                "score":     sig["score"],
-                "time":      now,
-            }
-            state["alerts_sent"]  += 1
-            state["trades_today"] += 1
-            print(f"      [ALERTED] {name} {sig['direction']} {sig['score']}/100")
+            scan_results.append((name, sig, sig["rating"], sig["score"], alerted))
 
         except Exception as e:
             import traceback
             print(f"  [{name}] error: {e}")
             traceback.print_exc()
+            scan_results.append((name, None, "ERROR", 0, "—"))
+
+    # ── Send per-scan summary to Telegram ─────────────────────
+    _send_scan_summary(state["scan_count"], now_str, scan_results)
+
+
+def _send_scan_summary(scan_no: int, time_str: str, results: list):
+    """Send a compact scan report to Telegram after every scan."""
+    lines = []
+    alerted_names = []
+
+    for (name, sig, rating, score, alerted) in results:
+        if sig is None:
+            icon = "❓"
+            bar  = f"`{name:<12}` {icon} {rating}"
+        else:
+            dir_icon = "▲" if sig["direction"] == "CALL" else "▼"
+            # Score bar (5 blocks out of 10)
+            filled = round(score / 10)
+            bar_str = "█" * filled + "░" * (10 - filled)
+            if score >= SCORE_ULTRA:
+                s_icon = "🔥"
+            elif score >= SCORE_STRONG:
+                s_icon = "💪"
+            elif score >= SCORE_MEDIUM:
+                s_icon = "⚡"
+            else:
+                s_icon = "·"
+            alert_tag = " ✅ *SIGNAL SENT*" if alerted is True else ""
+            bar = (
+                f"`{name:<12}` {dir_icon} {sig['direction']} "
+                f"{s_icon} `{score:3d}/100` [{bar_str}] "
+                f"RSI {sig['rsi']:.0f} LTP {sig['ltp']:,.0f}"
+                f"{alert_tag}"
+            )
+            if alerted is True:
+                alerted_names.append(name)
+
+        lines.append(bar)
+
+    body = "\n".join(lines)
+    vix_str = f"{state['vix']:.1f}" if state["vix"] else "—"
+    pcr_str = f"{state['pcr']:.2f}" if state["pcr"] else "—"
+
+    footer = (
+        f"\n📈 VIX `{vix_str}` | PCR `{pcr_str}` | "
+        f"Alerts today: {state['alerts_sent']}"
+    )
+
+    if alerted_names:
+        header = f"🔍 *Scan #{scan_no}* | {time_str} | 🚨 Signal fired!"
+    else:
+        header = f"🔍 *Scan #{scan_no}* | {time_str} | No signal yet"
+
+    send_telegram(f"{header}\n\n{body}{footer}")
 
 def eod_summary():
     now_str = datetime.now(IST).strftime("%d %b %Y")
