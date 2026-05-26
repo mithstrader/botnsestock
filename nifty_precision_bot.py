@@ -49,6 +49,7 @@ except ImportError:
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 CHAT_ID        = os.environ.get("CHAT_ID", "")
 _CI            = os.environ.get("CI", "false").lower() == "true"
+TEST_MODE      = os.environ.get("TEST_MODE", "false").lower() == "true"
 
 ENABLE_TELEGRAM       = True
 ENABLE_DESKTOP_NOTIFY = not _CI
@@ -123,6 +124,7 @@ LATE_SESSION    = (14, 30)  # Late trades need score >= SCORE_ULTRA
 
 MAX_TRADES_DAY  = 6         # Max alerts across all instruments per day
 RESIGAL_GAP_MIN = 30        # Don't re-alert same instrument within N min unless score rises 10+
+HEARTBEAT_SCANS = 12        # Send alive ping every N scans (~60 min) even with no signal
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -138,6 +140,8 @@ state = {
     "pcr":            None,
     "last_vix_fetch": None,
     "last_signal":    {},   # name → {direction, score, time}
+    "data_errors":    {},   # name → consecutive fetch error count
+    "scores_seen":    [],   # last 10 scores (for heartbeat)
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -335,27 +339,30 @@ def fetch_vix_pcr():
     return vix_val, pcr_val
 
 def fetch_ohlcv(ticker: str) -> Optional["pd.DataFrame"]:
-    """Download 2 days of 5-min OHLCV from yfinance, timezone-converted to IST."""
+    """Download 5-min OHLCV from yfinance with fallback periods, IST-converted."""
     if not _yf:
         return None
-    try:
-        df = yf.download(ticker, period="5d", interval="5m",
-                         progress=False, auto_adjust=True)
-        if df is None or df.empty:
-            return None
-        # Flatten MultiIndex columns (yfinance sometimes returns them)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        # Convert to IST
-        if df.index.tz is None:
-            df.index = df.index.tz_localize("UTC").tz_convert(IST)
-        else:
-            df.index = df.index.tz_convert(IST)
-        df = df.dropna(subset=["Close", "High", "Low"])
-        return df
-    except Exception as e:
-        print(f"[DATA] {ticker}: {e}")
-        return None
+    # Try progressively broader periods in case Yahoo throttles short periods
+    for period in ("5d", "7d", "1mo"):
+        try:
+            df = yf.download(ticker, period=period, interval="5m",
+                             progress=False, auto_adjust=True)
+            if df is None or df.empty:
+                continue
+            # Flatten MultiIndex columns (yfinance sometimes returns them)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            # Convert to IST
+            if df.index.tz is None:
+                df.index = df.index.tz_localize("UTC").tz_convert(IST)
+            else:
+                df.index = df.index.tz_convert(IST)
+            df = df.dropna(subset=["Close", "High", "Low"])
+            if len(df) >= 20:
+                return df
+        except Exception as e:
+            print(f"[DATA] {ticker} (period={period}): {e}")
+    return None
 
 def split_sessions(df) -> tuple:
     """Split full OHLCV into today's and most recent previous trading day."""
@@ -393,16 +400,18 @@ def get_orb(df_today) -> tuple:
 def analyze(name: str, cfg: dict) -> Optional[dict]:
     df = fetch_ohlcv(cfg["ticker"])
     if df is None or len(df) < 20:
-        print(f"[{name}] insufficient data")
+        data_error_ping(name, f"yfinance returned no/empty data for {cfg['ticker']}")
         return None
 
     df_today, df_prev = split_sessions(df)
     if df_today.empty or len(df_today) < 5:
-        print(f"[{name}] no today data")
+        data_error_ping(name, f"No today's candles found (today date not in data)")
         return None
     if df_prev.empty:
-        print(f"[{name}] no previous-day data for CPR/PDH/PDL")
+        data_error_ping(name, "No previous-day data — can't compute CPR/PDH/PDL")
         return None
+
+    reset_data_error(name)
 
     # ── Previous-day levels ────────────────────────────────────
     pdh = float(df_prev["High"].max())
@@ -653,6 +662,54 @@ def send_telegram(msg: str):
     except Exception as e:
         print(f"[TG] {e}")
 
+def startup_ping():
+    """Send Telegram the moment the bot starts — confirms it's alive."""
+    now_str = datetime.now(IST).strftime("%d %b %Y %H:%M IST")
+    mode    = "🧪 TEST MODE" if TEST_MODE else "🟢 LIVE"
+    msg = (
+        f"🚀 *Nifty Precision Bot — Started*\n"
+        f"⏰ {now_str}\n"
+        f"📊 Mode: {mode}\n"
+        f"🎯 Scanning: {', '.join(INSTRUMENTS.keys())}\n"
+        f"📈 Strategy: ORB + EMA + VWAP + ST + RSI + CPR + PDH/PDL + Fib\n"
+        f"🔔 Alert threshold: score ≥ {SCORE_STRONG}\n"
+        f"⏱ Scan every {SCAN_INTERVAL} min | Stops at 3:32 PM IST"
+    )
+    send_telegram(msg)
+    print("[STARTUP] Telegram ping sent.")
+
+def heartbeat_ping():
+    """Periodic alive check — sent every HEARTBEAT_SCANS scans."""
+    now_str = datetime.now(IST).strftime("%H:%M IST")
+    recent  = state["scores_seen"][-6:] if state["scores_seen"] else []
+    avg_sc  = round(sum(recent) / len(recent)) if recent else 0
+    msg = (
+        f"💓 *Nifty Precision Bot — Alive*\n"
+        f"⏰ {now_str}\n"
+        f"🔍 Scans: {state['scan_count']}  |  Alerts: {state['alerts_sent']}\n"
+        f"📊 Avg score (recent): {avg_sc}/100\n"
+        f"📈 VIX: {state['vix'] or '—'}  |  PCR: {state['pcr'] or '—'}\n"
+        f"_No signal yet — watching for confluence…_"
+    )
+    send_telegram(msg)
+    print(f"[HEARTBEAT] Sent at scan #{state['scan_count']}")
+
+def data_error_ping(name: str, reason: str):
+    """Send Telegram when a data fetch fails — 1st time and every 6th repeat."""
+    err_count = state["data_errors"].get(name, 0) + 1
+    state["data_errors"][name] = err_count
+    if err_count == 1 or err_count % 6 == 0:
+        send_telegram(
+            f"⚠️ *Data Fetch Issue — {name}*\n"
+            f"Reason: {reason}\n"
+            f"Failures: {err_count}\n"
+            f"_Bot still running, retrying next scan_"
+        )
+        print(f"[DATA ERROR] {name}: {reason} (failure #{err_count})")
+
+def reset_data_error(name: str):
+    state["data_errors"][name] = 0
+
 def format_signal(sig: dict) -> str:
     d_icon   = "▲ CALL" if sig["direction"] == "CALL" else "▼ PUT"
     now_str  = datetime.now(IST).strftime("%d %b %Y %H:%M IST")
@@ -825,6 +882,10 @@ def scan():
     print(f"\n{'─'*55}")
     print(f"[SCAN #{state['scan_count']}] {datetime.now(IST).strftime('%H:%M IST')}")
 
+    # Heartbeat every N scans so user knows bot is alive even with no signals
+    if state["scan_count"] % HEARTBEAT_SCANS == 0:
+        heartbeat_ping()
+
     refresh_vix_pcr()
 
     if state["vix"] and state["vix"] > VIX_EXTREME:
@@ -836,6 +897,10 @@ def scan():
             sig = analyze(name, cfg)
             if sig is None:
                 continue
+
+            state["scores_seen"].append(sig["score"])
+            if len(state["scores_seen"]) > 30:
+                state["scores_seen"] = state["scores_seen"][-30:]
 
             print(f"  [{name}] {sig['direction']} | Score={sig['score']} | {sig['rating']} | "
                   f"RSI={sig['rsi']:.1f} | EMA9/21={sig['e9']:.0f}/{sig['e21']:.0f} | "
@@ -903,13 +968,41 @@ def main():
     print("=" * 55)
     print("  Nifty Precision Bot — Multi-Indicator Confluence")
     print(f"  Instruments : {', '.join(INSTRUMENTS)}")
-    print(f"  Strategy    : ORB + EMA9/21 + VWAP + SuperTrend + RSI + CPR + PDH/PDL")
+    print(f"  Strategy    : ORB + EMA9/21 + VWAP + SuperTrend + RSI + CPR + PDH/PDL + Fib")
     print(f"  Alert score : ≥{SCORE_STRONG} (Strong) / ≥{SCORE_ULTRA} (Ultra)")
     print(f"  R:R target  : 1:3")
+    print(f"  Test mode   : {TEST_MODE}")
     print("=" * 55)
 
     if not _yf:
-        print("[FATAL] yfinance not installed. Run: pip install yfinance pandas numpy")
+        msg = "[FATAL] yfinance not installed. Run: pip install yfinance pandas numpy"
+        print(msg)
+        send_telegram(f"❌ *Nifty Precision Bot — FATAL*\n{msg}")
+        return
+
+    # Always ping Telegram on startup so user knows bot is alive
+    startup_ping()
+
+    # TEST MODE: verify Telegram works + data fetches, then exit
+    if TEST_MODE:
+        print("[TEST] Running quick data check for all instruments…")
+        results = []
+        for name, cfg in INSTRUMENTS.items():
+            df = fetch_ohlcv(cfg["ticker"])
+            if df is not None and len(df) >= 20:
+                ltp = float(df["Close"].iloc[-1])
+                results.append(f"  ✅ {name}: {len(df)} candles, LTP={ltp:,.1f}")
+            else:
+                results.append(f"  ❌ {name}: NO DATA from yfinance ({cfg['ticker']})")
+        vix_v, pcr_v = fetch_vix_pcr()
+        result_str = "\n".join(results)
+        send_telegram(
+            f"🧪 *Nifty Precision Bot — TEST RESULT*\n\n"
+            f"{result_str}\n\n"
+            f"📈 VIX: {vix_v or 'fetch failed'}  |  PCR: {pcr_v or 'fetch failed'}\n\n"
+            f"_Test complete. Bot will run normally on schedule._"
+        )
+        print("[TEST] Done. Exiting.")
         return
 
     _init_excel()
@@ -922,7 +1015,7 @@ def main():
     while True:
         schedule.run_pending()
         now = datetime.now(IST)
-        # Auto-exit by 3:32 PM IST (total job ~ 5h57m on GitHub Actions when starting 9:35)
+        # Auto-exit by 3:32 PM IST (~5h57m total from 9:35 AM start on GitHub Actions)
         if now.hour > 15 or (now.hour == 15 and now.minute >= 32):
             eod_summary()
             break

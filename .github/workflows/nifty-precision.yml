@@ -26,6 +26,7 @@ jobs:
       CHAT_ID:        ${{ secrets.CHAT_ID }}
       CI:             "true"
       EXCEL_FOLDER:   "./logs"
+      TEST_MODE:      ${{ github.event.inputs.test_mode || 'false' }}
 
     steps:
       - name: Checkout code
