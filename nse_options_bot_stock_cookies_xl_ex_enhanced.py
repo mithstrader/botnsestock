@@ -729,11 +729,28 @@ def _expiry_calendar_fallback():
 
 
 def _warm_trendlyne_session():
-    """Visit Trendlyne's main page to get cookies before API calls."""
+    """
+    Visit Trendlyne pages to get session cookies, then extract the Django
+    CSRF token and set it as X-CSRFToken header for all subsequent API calls.
+    Without this, the API returns an auth-error JSON (head = string) instead
+    of real data.
+    """
+    pages = [
+        "https://smartoptions.trendlyne.com/",
+        "https://smartoptions.trendlyne.com/fno-market-filter/",
+        "https://smartoptions.trendlyne.com/oi-gainers/oi-gainers/",
+    ]
     try:
-        _session.get("https://smartoptions.trendlyne.com/", timeout=10)
-        _session.get("https://smartoptions.trendlyne.com/fno-market-filter/", timeout=10)
-        print("[TRENDLYNE] Session warmed up.")
+        for url in pages:
+            _session.get(url, timeout=10)
+
+        # Django requires csrftoken cookie to be echoed back as X-CSRFToken header
+        csrf = _session.cookies.get("csrftoken", "")
+        if csrf:
+            _session.headers.update({"X-CSRFToken": csrf})
+            print(f"[TRENDLYNE] Session warmed up. CSRF: {csrf[:10]}...")
+        else:
+            print("[TRENDLYNE] Session warmed up (no CSRF cookie found).")
     except Exception as e:
         print(f"[TRENDLYNE] Warm-up failed (continuing): {e}")
 
@@ -774,32 +791,49 @@ def get_near_expiry():
     return expiry
 
 
+def _try_fetch_oi(expiry):
+    """Single attempt to fetch OI gainers. Returns data dict or None."""
+    url = (
+        "https://smartoptions.trendlyne.com/phoenix/api/fno/market/filter/"
+        f"?mtype=futures&expDate={expiry}&screenType=oi-gainers"
+    )
+    r = _session.get(url, timeout=20)
+    r.raise_for_status()
+    d = r.json()
+    if not isinstance(d, dict):
+        print(f"[FETCH] Unexpected type ({type(d).__name__}) — session cold")
+        return None
+    head   = d.get("head")
+    status = head.get("status") if isinstance(head, dict) else None
+    if str(status) in ("0", "0.0") or status == 0:
+        rows = len((d.get("body") or {}).get("tableData") or [])
+        print(f"[FETCH] OK — {rows} stocks for expiry {expiry}")
+        return d
+    print(f"[FETCH] status={status!r} head={type(head).__name__} — auth/CSRF problem")
+    return None
+
+
 def fetch_oi_gainers(expiry_override=None):
-    """Fetch OI gainers for the current near expiry."""
+    """Fetch OI gainers — auto-retries with re-warm on first failure."""
     expiry = expiry_override or get_near_expiry()
     if not expiry:
         print("[FETCH] No valid expiry date available.")
         return None
 
-    url = (
-        "https://smartoptions.trendlyne.com/phoenix/api/fno/market/filter/"
-        f"?mtype=futures&expDate={expiry}&screenType=oi-gainers"
-    )
     try:
-        r = _session.get(url, timeout=20)
-        r.raise_for_status()
-        d = r.json()
-        if not isinstance(d, dict):
-            print(f"[FETCH] Unexpected response type: {type(d).__name__} — session may need warming")
-            return None
-        # status can be int 0 or string "0" depending on API version
-        status = d.get("head", {}).get("status")
-        if str(status) == "0" or status == 0:
-            return d
-        print(f"[FETCH] API returned status={status!r}")
-        return None
+        data = _try_fetch_oi(expiry)
+        if data is not None:
+            return data
     except Exception as e:
-        print(f"[FETCH ERROR] {e}")
+        print(f"[FETCH] Attempt 1 failed: {e}")
+
+    # ── Retry: re-warm Trendlyne session and try again ────────────
+    print("[FETCH] Re-warming Trendlyne session and retrying...")
+    _warm_trendlyne_session()
+    try:
+        return _try_fetch_oi(expiry)
+    except Exception as e:
+        print(f"[FETCH ERROR] Attempt 2 failed: {e}")
         return None
 
 
