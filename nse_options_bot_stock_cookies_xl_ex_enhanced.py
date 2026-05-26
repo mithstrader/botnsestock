@@ -1090,10 +1090,13 @@ _tg_offset = 0
 # Separate NSE session (different domain from Trendlyne)
 _nse_session = requests.Session()
 _nse_session.headers.update({
-    "User-Agent"     : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept"         : "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer"        : "https://www.nseindia.com/market-data/pre-open-market-cm-and-emerge-market",
+    "User-Agent"      : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept"          : "application/json, text/plain, */*",
+    "Accept-Language" : "en-US,en;q=0.9",
+    "Accept-Encoding" : "gzip, deflate, br",
+    "Connection"      : "keep-alive",
+    "Referer"         : "https://www.nseindia.com/option-chain",
+    "X-Requested-With": "XMLHttpRequest",
 })
 
 
@@ -1139,24 +1142,59 @@ def fetch_india_vix():
 
 
 def fetch_nifty_pcr():
-    """Calculate Nifty PCR from live option chain (PE OI / CE OI)."""
+    """
+    Calculate Nifty PCR from live option chain (PE OI / CE OI).
+
+    NSE changed their API — option-chain-indices now needs an expiryDate param.
+    Strategy:
+      1. Get near expiry from option-chain-contract-info (confirmed working)
+      2. Try option-chain-indices with that expiry date
+      3. Fallback: try without expiry (old style)
+    """
+    # ── Step 1: get near expiry date from working NSE endpoint ────
+    near_expiry = None
     try:
-        r = _nse_session.get(
-            "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY",
-            timeout=15
+        ci = _nse_session.get(
+            "https://www.nseindia.com/api/option-chain-contract-info?symbol=NIFTY",
+            timeout=10
         )
-        r.raise_for_status()
-        filtered = r.json().get("filtered", {})
-        ce_oi    = filtered.get("CE", {}).get("totOI", 0)
-        pe_oi    = filtered.get("PE", {}).get("totOI", 0)
-        if ce_oi > 0:
-            pcr = round(pe_oi / ce_oi, 3)
-            _market_context["pcr"] = pcr
-            print(f"[PCR] Nifty PCR: {pcr:.3f}  "
-                  f"(PE {pe_oi:,} / CE {ce_oi:,})")
-            return pcr
+        ci.raise_for_status()
+        expiry_dates = ci.json().get("expiryDates", [])
+        near_expiry  = expiry_dates[0] if expiry_dates else None
+        if near_expiry:
+            print(f"[PCR] Near expiry from NSE: {near_expiry}")
     except Exception as e:
-        print(f"[PCR ERROR] {e}")
+        print(f"[PCR] Could not fetch expiry dates: {e}")
+
+    # ── Step 2: try option-chain-indices with and without expiry ──
+    urls = []
+    if near_expiry:
+        urls.append(
+            f"https://www.nseindia.com/api/option-chain-indices"
+            f"?symbol=NIFTY&expiryDate={near_expiry}"
+        )
+    urls.append("https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY")
+
+    for url in urls:
+        try:
+            r = _nse_session.get(url, timeout=15)
+            if r.status_code == 404:
+                continue
+            r.raise_for_status()
+            data     = r.json()
+            filtered = data.get("filtered", {})
+            ce_oi    = filtered.get("CE", {}).get("totOI", 0)
+            pe_oi    = filtered.get("PE", {}).get("totOI", 0)
+            if ce_oi > 0:
+                pcr = round(pe_oi / ce_oi, 3)
+                _market_context["pcr"] = pcr
+                print(f"[PCR] Nifty PCR: {pcr:.3f}  (PE {pe_oi:,} / CE {ce_oi:,})")
+                return pcr
+        except Exception as e:
+            print(f"[PCR] {url} failed: {e}")
+            continue
+
+    print("[PCR] Could not fetch PCR — continuing without it")
     return None
 
 
