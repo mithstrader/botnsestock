@@ -712,10 +712,35 @@ EXPIRY_URL = "https://smartoptions.trendlyne.com/phoenix/api/fno/get-expiry-date
 SCREENER_TYPES = ["oi-gainers", "short-covering", "long-unwinding"]
 
 
+def _expiry_calendar_fallback():
+    """Calculate near expiry as last Thursday of current (or next) month."""
+    today = ist_now().date()
+    def _last_thu(year, month):
+        last_day = calendar.monthrange(year, month)[1]
+        for d in range(last_day, 0, -1):
+            if date(year, month, d).weekday() == 3:   # Thursday
+                return date(year, month, d)
+    expiry = _last_thu(today.year, today.month)
+    if today > expiry:
+        nm = today.month + 1 if today.month < 12 else 1
+        ny = today.year + 1 if today.month == 12 else today.year
+        expiry = _last_thu(ny, nm)
+    return expiry.strftime('%Y-%m-%d')
+
+
+def _warm_trendlyne_session():
+    """Visit Trendlyne's main page to get cookies before API calls."""
+    try:
+        _session.get("https://smartoptions.trendlyne.com/", timeout=10)
+        _session.get("https://smartoptions.trendlyne.com/fno-market-filter/", timeout=10)
+        print("[TRENDLYNE] Session warmed up.")
+    except Exception as e:
+        print(f"[TRENDLYNE] Warm-up failed (continuing): {e}")
+
+
 def get_near_expiry():
     """
-    Fetch the current near expiry from Trendlyne's expiry-dates API.
-    Returns default_expiry_date (e.g. '2026-05-26').
+    Fetch near expiry from Trendlyne API, with calendar fallback.
     Caches the result for the day to avoid repeated calls.
     """
     IST   = pytz.timezone("Asia/Kolkata")
@@ -724,17 +749,29 @@ def get_near_expiry():
     if _expiry_cache["day"] == today and _expiry_cache["expiry"]:
         return _expiry_cache["expiry"]
 
+    # ── Try Trendlyne API ────────────────────────────────────────
     try:
-        r    = _session.get(EXPIRY_URL, timeout=10)
+        r = _session.get(EXPIRY_URL, timeout=10)
         r.raise_for_status()
         data = r.json()
-        expiry = data["body"]["default_expiry_date"]
-        _expiry_cache.update({"expiry": expiry, "day": today})
-        print(f"[EXPIRY] {expiry}  (available: {data['body']['expiryDates']})")
-        return expiry
+        # Safely navigate — API can return unexpected types when session is cold
+        if isinstance(data, dict):
+            body = data.get("body")
+            if isinstance(body, dict):
+                expiry = body.get("default_expiry_date")
+                if expiry and isinstance(expiry, str):
+                    _expiry_cache.update({"expiry": expiry, "day": today})
+                    print(f"[EXPIRY] {expiry}  (from API, available: {body.get('expiryDates', [])})")
+                    return expiry
+        print(f"[EXPIRY] Unexpected response format ({type(data).__name__}) — using calendar fallback")
     except Exception as e:
-        print(f"[EXPIRY ERROR] {e}")
-        return None
+        print(f"[EXPIRY] API error ({e}) — using calendar fallback")
+
+    # ── Calendar fallback ────────────────────────────────────────
+    expiry = _expiry_calendar_fallback()
+    _expiry_cache.update({"expiry": expiry, "day": today})
+    print(f"[EXPIRY] Fallback (calendar): {expiry}")
+    return expiry
 
 
 def fetch_oi_gainers(expiry_override=None):
@@ -742,11 +779,6 @@ def fetch_oi_gainers(expiry_override=None):
     expiry = expiry_override or get_near_expiry()
     if not expiry:
         print("[FETCH] No valid expiry date available.")
-        send_telegram(
-                    f"🛑 *Bot..*\n"
-                    f"[FETCH] No valid expiry date available..\n"
-                    f". 🙏"
-                    )
         return None
 
     url = (
@@ -757,7 +789,15 @@ def fetch_oi_gainers(expiry_override=None):
         r = _session.get(url, timeout=20)
         r.raise_for_status()
         d = r.json()
-        return d if d.get("head", {}).get("status") == 0 else None
+        if not isinstance(d, dict):
+            print(f"[FETCH] Unexpected response type: {type(d).__name__} — session may need warming")
+            return None
+        # status can be int 0 or string "0" depending on API version
+        status = d.get("head", {}).get("status")
+        if str(status) == "0" or status == 0:
+            return d
+        print(f"[FETCH] API returned status={status!r}")
+        return None
     except Exception as e:
         print(f"[FETCH ERROR] {e}")
         return None
@@ -1058,16 +1098,21 @@ _nse_session.headers.update({
 
 
 def _warm_nse_session():
-    """NSE requires a browser-like session visit before API calls."""
-    try:
-        _nse_session.get("https://www.nseindia.com/", timeout=10)
-        _nse_session.get(
-            "https://www.nseindia.com/market-data/pre-open-market-cm-and-emerge-market",
-            timeout=10
-        )
-        print("[NSE] Session warmed up.")
-    except Exception as e:
-        print(f"[NSE] Session warm-up failed: {e}")
+    """
+    NSE requires a browser-like session visit before API calls.
+    Visit homepage + pre-open page + option-chain page to get all cookies.
+    """
+    pages = [
+        "https://www.nseindia.com/",
+        "https://www.nseindia.com/market-data/pre-open-market-cm-and-emerge-market",
+        "https://www.nseindia.com/option-chain",   # needed for PCR API cookie
+    ]
+    for url in pages:
+        try:
+            _nse_session.get(url, timeout=10)
+        except Exception as e:
+            print(f"[NSE] Warm-up page failed ({url}): {e}")
+    print("[NSE] Session warmed up.")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -2366,6 +2411,7 @@ if __name__ == "__main__":
     if PREMARKET_ONLY:
         print(f"[{IST_NOW.strftime('%H:%M')} IST] Running pre-market scan only...")
         _warm_nse_session()
+        _warm_trendlyne_session()
         refresh_market_context(force=True)
         premarket_scan()
         print("[PREMARKET] Done. Exiting.")
@@ -2394,8 +2440,9 @@ if __name__ == "__main__":
     schedule.every().day.at("10:05").do(eod_job)   # 3:35 PM IST = 10:05 UTC
     schedule.every().day.at("03:40").do(premarket_scan)  # 9:10 AM IST
 
-    # Warm NSE session for pre-open data
+    # Warm NSE + Trendlyne sessions before first API call
     _warm_nse_session()
+    _warm_trendlyne_session()
 
     # ── Startup Telegram notification ────────────────────────────
     refresh_market_context(force=True)
