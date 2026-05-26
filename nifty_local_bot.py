@@ -19,8 +19,10 @@ R:R         : 1:3
 #  ⚙️  FILL THESE IN — that's all you need to change
 # ═══════════════════════════════════════════════════════════════
 
-TELEGRAM_TOKEN = "YOUR_BOT_TOKEN_HERE"       # e.g. "7xxxxxxxxx:AAF..."
-CHAT_ID        = "YOUR_CHAT_ID_HERE"          # e.g. "123456789"
+# TELEGRAM_TOKEN = "YOUR_BOT_TOKEN_HERE"       # e.g. "7xxxxxxxxx:AAF..."
+# CHAT_ID        = "YOUR_CHAT_ID_HERE"          # e.g. "123456789"
+TELEGRAM_TOKEN = "8880731923:AAHXLJ161qn5WX7rAS_goWgNtxpzgxyC_Ys"    # From @BotFather
+CHAT_ID        = "670433968"      # From @userinfobot
 
 EXCEL_FOLDER   = r"C:\NSE_Bot\logs"          # Where to save Excel logs (auto-created)
 
@@ -237,19 +239,52 @@ def fetch_vix_pcr():
         print(f"  [PCR] {e}")
     return vix_val, pcr_val
 
+def _normalise_df(df) -> Optional[pd.DataFrame]:
+    """Flatten MultiIndex columns, convert index to IST, drop NaNs."""
+    if df is None or df.empty:
+        return None
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    # Rename 'Price' level leftover from some yf versions
+    df.columns = [c.strip().capitalize() for c in df.columns]
+    try:
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC").tz_convert(IST)
+        else:
+            df.index = df.index.tz_convert(IST)
+    except Exception:
+        pass
+    df = df.dropna(subset=["Close", "High", "Low"])
+    return df if len(df) >= 20 else None
+
+
 def fetch_ohlcv(ticker: str) -> Optional[pd.DataFrame]:
+    """Fetch 5-min OHLCV.  Tries Ticker.history() first (more robust),
+    then falls back to yf.download()."""
+
+    # ── Method 1: Ticker.history() ──────────────────────────────
+    for period in ("5d", "7d", "10d"):
+        try:
+            tk  = yf.Ticker(ticker)
+            df  = tk.history(period=period, interval="5m", auto_adjust=True)
+            out = _normalise_df(df)
+            if out is not None:
+                return out
+        except Exception as e:
+            print(f"  [DATA] {ticker} Ticker.history period={period}: {e}")
+
+    # ── Method 2: yf.download() fallback ────────────────────────
     for period in ("5d", "7d", "1mo"):
         try:
-            df = yf.download(ticker, period=period, interval="5m",
-                             progress=False, auto_adjust=True)
-            if df is None or df.empty: continue
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            df.index = df.index.tz_convert(IST) if df.index.tz else df.index.tz_localize("UTC").tz_convert(IST)
-            df = df.dropna(subset=["Close","High","Low"])
-            if len(df) >= 20: return df
+            df  = yf.download(ticker, period=period, interval="5m",
+                              progress=False, auto_adjust=True,
+                              threads=False)
+            out = _normalise_df(df)
+            if out is not None:
+                return out
         except Exception as e:
-            print(f"  [DATA] {ticker} period={period}: {e}")
+            print(f"  [DATA] {ticker} download period={period}: {e}")
+
     return None
 
 def split_sessions(df):
