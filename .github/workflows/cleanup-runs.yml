@@ -1,0 +1,75 @@
+name: Cleanup Old Workflow Runs
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_count:
+        description: 'How many recent runs to keep per workflow'
+        required: false
+        default: '3'
+        type: string
+
+  # Auto-cleanup every Monday at midnight IST (18:30 UTC Sunday)
+  schedule:
+    - cron: "30 18 * * 0"
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Delete old workflow runs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const keepCount = parseInt(core.getInput('keep_count') || '3', 10) || 3;
+
+            console.log(`Keeping last ${keepCount} runs per workflow. Deleting the rest...`);
+
+            // Get all workflows in the repo
+            const { data: wfList } = await github.rest.actions.listRepoWorkflows({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            });
+
+            let totalDeleted = 0;
+
+            for (const wf of wfList.workflows) {
+              console.log(`\nWorkflow: "${wf.name}" (ID ${wf.id})`);
+
+              // Fetch up to 100 runs for this workflow
+              const { data: runData } = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: wf.id,
+                per_page: 100,
+              });
+
+              const runs    = runData.workflow_runs;
+              const toKeep  = runs.slice(0, keepCount);
+              const toDelete = runs.slice(keepCount);
+
+              console.log(`  Total: ${runs.length}  |  Keep: ${toKeep.length}  |  Delete: ${toDelete.length}`);
+
+              for (const run of toDelete) {
+                try {
+                  await github.rest.actions.deleteWorkflowRun({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    run_id: run.id,
+                  });
+                  console.log(`  Deleted run #${run.run_number} (${run.status} | ${run.created_at})`);
+                  totalDeleted++;
+                } catch (err) {
+                  console.log(`  Could not delete run #${run.run_number}: ${err.message}`);
+                }
+              }
+            }
+
+            console.log(`\nDone. Total deleted: ${totalDeleted}`);
+          keep_count: ${{ github.event.inputs.keep_count || '3' }}
