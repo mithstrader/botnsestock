@@ -21,7 +21,7 @@ R:R         : 1:3
 
 # TELEGRAM_TOKEN = "YOUR_BOT_TOKEN_HERE"       # e.g. "7xxxxxxxxx:AAF..."
 # CHAT_ID        = "YOUR_CHAT_ID_HERE"          # e.g. "123456789"
-TELEGRAM_TOKEN = "8880731923:AAHXLJ161qn5WX7rAS_goWgNtxpzgxyC_Ys"    # From @BotFather
+TELEGRAM_TOKEN = "8794792642:AAE4r1BEYAyytGl_IXfZ8XwkebW7omTomGs"    # From @BotFather
 CHAT_ID        = "670433968"      # From @userinfobot
 
 EXCEL_FOLDER   = r"C:\NSE_Bot\logs"          # Where to save Excel logs (auto-created)
@@ -736,13 +736,37 @@ def eod_summary():
     send_desktop("Market Closed", f"Scans: {state['scan_count']} | Alerts: {state['alerts_sent']}")
     print(f"\n{'='*55}\nEOD | Scans: {state['scan_count']} | Alerts: {state['alerts_sent']}\n{'='*55}")
 
+
+def _reset_daily_state():
+    """Reset per-day counters when a new trading session begins."""
+    state["scan_count"]     = 0
+    state["alerts_sent"]    = 0
+    state["trades_today"]   = 0
+    state["last_signal"]    = {}
+    state["scores_seen"]    = []
+    state["vix"]            = None
+    state["pcr"]            = None
+    state["last_vix_fetch"] = None
+    state["data_errors"]    = {}
+
+
+def _next_market_open():
+    """Return IST datetime of the next weekday 9:35 AM."""
+    now  = datetime.now(IST)
+    cand = now.replace(hour=BOT_START[0], minute=BOT_START[1], second=0, microsecond=0)
+    if cand <= now:
+        cand += timedelta(days=1)
+    while cand.weekday() >= 5:          # skip Saturday / Sunday
+        cand += timedelta(days=1)
+    return cand
+
 # ═══════════════════════════════════════════════════════════════
 #  ENTRY POINT
 # ═══════════════════════════════════════════════════════════════
 
 def main():
     print("=" * 55)
-    print("  Nifty Precision Bot — LOCAL")
+    print("  Nifty Precision Bot — LOCAL  (runs 24×5, auto-restart)")
     print(f"  Instruments : {', '.join(INSTRUMENTS)}")
     print(f"  Excel log   : {EXCEL_FILE}")
     print(f"  Alert score : ≥{SCORE_STRONG} (Strong) | ≥{SCORE_ULTRA} (Ultra)")
@@ -755,20 +779,63 @@ def main():
     _init_excel()
     startup_ping()
 
+    # Schedule recurring scans; EOD detection is done inside the while loop
     schedule.every(SCAN_INTERVAL).minutes.do(scan)
-    schedule.every().day.at("15:35").do(eod_summary)
 
+    # First scan immediately if already in market hours
     if in_market_hours():
         scan()
 
+    eod_sent_date  = None   # date on which EOD summary was last sent
+    active_date    = None   # date of the current / most recent trading session
+
     while True:
-        schedule.run_pending()
-        now = datetime.now(IST)
-        if now.hour > 15 or (now.hour == 15 and now.minute >= 32):
-            eod_summary()
-            print("Market closed. Restart tomorrow at 9:35 AM IST.")
+        try:
+            schedule.run_pending()
+            now    = datetime.now(IST)
+            today  = now.date()
+            in_mkt = in_market_hours()
+
+            # ── New trading session started ──────────────────────
+            if in_mkt and active_date != today:
+                if active_date is not None:     # not the very first boot
+                    print(f"\n🌅  New session: {today} — resetting daily state")
+                    _reset_daily_state()
+                    startup_ping()
+                    scan()                      # immediate first scan of the day
+                active_date = today
+
+            # ── End of trading day ───────────────────────────────
+            after_close = now.hour > 15 or (now.hour == 15 and now.minute >= 35)
+            if after_close and now.weekday() < 5 and eod_sent_date != today:
+                eod_summary()
+                eod_sent_date = today
+                nxt  = _next_market_open()
+                diff = nxt - now
+                hrs, leftover = divmod(int(diff.total_seconds()), 3600)
+                mins = leftover // 60
+                sleep_msg = (
+                    f"💤 *Market Closed — Bot Sleeping*\n"
+                    f"Next session: *{nxt.strftime('%a %d %b, %H:%M IST')}*\n"
+                    f"Auto-resumes in {hrs}h {mins}m — no restart needed 🔄"
+                )
+                print(f"\n💤  Sleeping until {nxt.strftime('%a %d %b %H:%M IST')} "
+                      f"({hrs}h {mins}m away)")
+                send_telegram(sleep_msg)
+                send_desktop("Market Closed",
+                             f"Next: {nxt.strftime('%a %d %b %H:%M')} | "
+                             f"{hrs}h {mins}m")
+
+            # Sleep longer when outside market hours (saves CPU)
+            time.sleep(20 if in_mkt else 60)
+
+        except KeyboardInterrupt:
+            print("\n\n[STOP] Ctrl-C received — goodbye!")
             break
-        time.sleep(20)
+        except Exception as exc:
+            print(f"\n[MAIN-LOOP ERROR] {exc}")
+            time.sleep(30)          # brief pause, then keep running
+
 
 if __name__ == "__main__":
     main()
