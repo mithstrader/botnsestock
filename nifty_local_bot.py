@@ -21,10 +21,18 @@ R:R         : 1:3
 
 # TELEGRAM_TOKEN = "YOUR_BOT_TOKEN_HERE"       # e.g. "7xxxxxxxxx:AAF..."
 # CHAT_ID        = "YOUR_CHAT_ID_HERE"          # e.g. "123456789"
-TELEGRAM_TOKEN = "8794792642:AAE4r1BEYAyytGl_IXfZ8XwkebW7omTomGs"    # From @BotFather
-CHAT_ID        = "670433968"      # From @userinfobot
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8794792642:AAE4r1BEYAyytGl_IXfZ8XwkebW7omTomGs")
+CHAT_ID        = os.environ.get("CHAT_ID",        "670433968")
 
-EXCEL_FOLDER   = r"C:\NSE_Bot\logs"          # Where to save Excel logs (auto-created)
+# ── Supabase (cloud backend) ──────────────────────────────────
+# Get these from: Supabase → Project Settings → API
+# Set as environment variables on Railway, or paste directly for local use.
+SUPABASE_URL         = os.environ.get("SUPABASE_URL",         "")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")  # service_role key
+
+# ── Excel (local logging, optional) ──────────────────────────
+_default_excel = r"C:\NSE_Bot\logs" if platform.system() == "Windows" else "/tmp/nse_bot_logs"
+EXCEL_FOLDER   = os.environ.get("EXCEL_FOLDER", _default_excel)
 
 # ═══════════════════════════════════════════════════════════════
 #  OPTIONAL SETTINGS
@@ -73,6 +81,12 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import pytz, schedule, requests
+
+try:
+    from supabase import create_client as _sb_create
+    _sb_available = True
+except ImportError:
+    _sb_available = False
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -195,6 +209,119 @@ def calc_fib(df_today, direction, orb_h, orb_l):
         "swing_high":  round(sh, 1),
         "swing_low":   round(sl, 1),
     }
+
+# ═══════════════════════════════════════════════════════════════
+#  SUPABASE CLIENT + PUSH FUNCTIONS
+# ═══════════════════════════════════════════════════════════════
+
+_sb_client = None
+
+def get_sb():
+    global _sb_client
+    if _sb_client is None and _sb_available and SUPABASE_URL and SUPABASE_SERVICE_KEY:
+        try:
+            _sb_client = _sb_create(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+        except Exception as e:
+            print(f"  [SUPABASE] init error: {e}")
+    return _sb_client
+
+def sb_push_signal(sig):
+    """Push a triggered signal to Supabase signals table."""
+    client = get_sb()
+    if client is None: return
+    try:
+        now = datetime.now(IST)
+        client.table("signals").insert({
+            "signal_date":  now.strftime("%Y-%m-%d"),
+            "signal_time":  sig["time"],
+            "instrument":   sig["instrument"],
+            "direction":    sig["direction"],
+            "rating":       sig["rating"],
+            "score":        sig["score"],
+            "ltp":          round(float(sig["ltp"]), 2),
+            "strike":       int(sig["strike"]),
+            "option_type":  sig["option_type"],
+            "sl_level":     round(float(sig["sl_level"]), 2),
+            "target_level": round(float(sig["target_level"]), 2),
+            "sl_pts":       round(float(sig["sl_pts"]), 2),
+            "target_pts":   round(float(sig["target_pts"]), 2),
+            "rsi":          round(float(sig["rsi"]), 2),
+            "vwap":         round(float(sig["vwap"]), 2),
+            "ema9":         round(float(sig["e9"]), 2),
+            "ema21":        round(float(sig["e21"]), 2),
+            "supertrend":   int(sig["st_dir"]),
+            "vix":          float(state["vix"]) if state["vix"] else None,
+            "pcr":          float(state["pcr"]) if state["pcr"] else None,
+            "fib_level":    sig["fib"]["level"],
+            "fib_price":    sig["fib"]["price"],
+            "fib_at_level": bool(sig["fib"]["at_fib"]),
+            "fib_bonus":    int(sig["fib"]["score_bonus"]),
+            "orb_high":     round(float(sig["orb_high"]), 2),
+            "orb_low":      round(float(sig["orb_low"]), 2),
+            "pdh":          round(float(sig["pdh"]), 2),
+            "pdl":          round(float(sig["pdl"]), 2),
+            "cpr_top":      round(float(sig["cpr"]["top"]), 2),
+            "cpr_bottom":   round(float(sig["cpr"]["bottom"]), 2),
+            "cpr_narrow":   bool(sig["cpr"]["narrow"]),
+            "ema_ok":       bool(sig["conditions"].get("EMA 9/21")),
+            "vwap_ok":      bool(sig["conditions"].get("VWAP")),
+            "orb_ok":       bool(sig["conditions"].get("ORB")),
+            "cpr_ok":       bool(sig["conditions"].get("CPR")),
+            "pdh_ok":       bool(sig["conditions"].get("PDH/PDL")),
+            "rsi_ok":       bool(sig["conditions"].get("RSI")),
+        }).execute()
+        print(f"  [SUPABASE] ✅ signal pushed for {sig['instrument']}")
+    except Exception as e:
+        print(f"  [SUPABASE] push_signal error: {e}")
+
+def sb_push_scan(scan_no, results):
+    """Push per-scan summary to Supabase scans table."""
+    client = get_sb()
+    if client is None: return
+    try:
+        now = datetime.now(IST)
+        row = {
+            "scan_date":     now.strftime("%Y-%m-%d"),
+            "scan_time":     now.strftime("%H:%M"),
+            "scan_number":   scan_no,
+            "vix":           float(state["vix"]) if state["vix"] else None,
+            "pcr":           float(state["pcr"]) if state["pcr"] else None,
+            "signals_count": sum(1 for _, _, _, _, alerted in results if alerted),
+        }
+        for name, sig, _, _, _ in results:
+            k = name.lower()
+            if sig:
+                row[f"{k}_score"] = int(sig["score"])
+                row[f"{k}_dir"]   = sig["direction"]
+                row[f"{k}_rsi"]   = round(float(sig["rsi"]), 2)
+                row[f"{k}_ltp"]   = round(float(sig["ltp"]), 2)
+        client.table("scans").insert(row).execute()
+    except Exception as e:
+        print(f"  [SUPABASE] push_scan error: {e}")
+
+def sb_update_status(status="running"):
+    """Update the single bot_status row."""
+    client = get_sb()
+    if client is None: return
+    try:
+        now = datetime.now(IST)
+        row = {
+            "id":           1,
+            "updated_at":   now.isoformat(),
+            "status":       status,
+            "scan_count":   state["scan_count"],
+            "alerts_today": state["alerts_sent"],
+            "session_date": now.strftime("%Y-%m-%d"),
+            "vix":          float(state["vix"]) if state["vix"] else None,
+            "pcr":          float(state["pcr"]) if state["pcr"] else None,
+        }
+        if status == "running":
+            row["last_scan_at"] = now.isoformat()
+        if status == "sleeping":
+            row["next_session_at"] = _next_market_open().isoformat()
+        client.table("bot_status").upsert(row).execute()
+    except Exception as e:
+        print(f"  [SUPABASE] update_status error: {e}")
 
 # ═══════════════════════════════════════════════════════════════
 #  DATA FETCHING
@@ -484,12 +611,13 @@ def send_desktop(title, msg, urgent=False):
 def startup_ping():
     now_str = datetime.now(IST).strftime("%d %b %Y %H:%M IST")
     send_telegram(
-        f"🚀 *Nifty Precision Bot — LOCAL — Started*\n"
+        f"🚀 *Nifty Precision Bot — Started*\n"
         f"⏰ {now_str}\n"
         f"🎯 Scanning: {', '.join(INSTRUMENTS)}\n"
         f"🔔 Alert threshold: score ≥ {SCORE_STRONG}\n"
         f"⏱ Every {SCAN_INTERVAL} min | 9:35 AM – 3:30 PM IST"
     )
+    sb_update_status("running")
 
 def heartbeat_ping():
     now_str = datetime.now(IST).strftime("%H:%M IST")
@@ -515,7 +643,10 @@ def _data_error(name, reason):
 #  EXCEL LOGGING
 # ═══════════════════════════════════════════════════════════════
 
-os.makedirs(EXCEL_FOLDER, exist_ok=True)
+try:
+    os.makedirs(EXCEL_FOLDER, exist_ok=True)
+except Exception:
+    EXCEL_FOLDER = "/tmp"
 EXCEL_FILE = os.path.join(EXCEL_FOLDER, "Nifty_Precision_Bot.xlsx")
 
 _HEADERS = [
@@ -705,6 +836,7 @@ def scan():
                 if not suppress:
                     send_telegram(format_signal(sig))
                     log_excel(sig)
+                    sb_push_signal(sig)
                     send_desktop(f"{name} {sig['direction']} {sig['rating']}",
                                  f"LTP {sig['ltp']:,.0f} | Score {sig['score']} | "
                                  f"SL {sig['sl_level']:,.0f} → T {sig['target_level']:,.0f}",
@@ -723,6 +855,8 @@ def scan():
             results.append((name, None, "ERROR", 0, False))
 
     send_scan_summary(state["scan_count"], now_str, results)
+    sb_push_scan(state["scan_count"], results)
+    sb_update_status("running")
 
 def eod_summary():
     now_str = datetime.now(IST).strftime("%d %b %Y")
@@ -735,6 +869,7 @@ def eod_summary():
     )
     send_desktop("Market Closed", f"Scans: {state['scan_count']} | Alerts: {state['alerts_sent']}")
     print(f"\n{'='*55}\nEOD | Scans: {state['scan_count']} | Alerts: {state['alerts_sent']}\n{'='*55}")
+    sb_update_status("sleeping")
 
 
 def _reset_daily_state():

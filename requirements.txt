@@ -3,6 +3,7 @@ schedule
 pytz
 openpyxl
 plyer
-yfinance
-pandas
-numpy
+yfinance>=0.2.55
+pandas>=2.0
+numpy>=1.26,<2
+supabase>=2.0

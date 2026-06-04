@@ -2,849 +2,559 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NSE Signal Dashboard</title>
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nifty Precision Bot — Live Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-  :root {
-    --bg:       #0d1117;
-    --surface:  #161b22;
-    --border:   #30363d;
-    --text:     #e6edf3;
-    --muted:    #8b949e;
-    --call:     #3fb950;
-    --put:      #f85149;
-    --accent:   #58a6ff;
-    --warn:     #d29922;
-    --ultra:    #bc8cff;
-    --header:   #1f3864;
-  }
-
-  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; }
-
-  header {
-    background: var(--header);
-    padding: 14px 24px;
-    display: flex; align-items: center; justify-content: space-between;
-    border-bottom: 1px solid var(--border);
-    position: sticky; top: 0; z-index: 100;
-    flex-wrap: wrap; gap: 8px;
-  }
-  header h1 { font-size: 18px; font-weight: 700; letter-spacing: .5px; }
-  header h1 span { color: var(--accent); }
-  #last-updated { font-size: 12px; color: var(--muted); }
-
-  .container { max-width: 1400px; margin: 0 auto; padding: 20px 24px; }
-
-  /* ── Top-level Tabs ── */
-  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 20px; flex-wrap: wrap; }
-  .tab-btn {
-    background: none; border: none; color: var(--muted); cursor: pointer;
-    padding: 10px 20px; font-size: 14px; border-bottom: 2px solid transparent;
-    transition: color .15s, border-color .15s; white-space: nowrap;
-  }
-  .tab-btn:hover { color: var(--text); }
-  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
-  .tab-btn.prec.active { color: var(--ultra); border-bottom-color: var(--ultra); }
-  .tab-pane { display: none; }
-  .tab-pane.active { display: block; }
-
-  /* Section label */
-  .section-pill {
-    display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .8px;
-    text-transform: uppercase; padding: 3px 10px; border-radius: 20px; margin-bottom: 16px;
-  }
-  .section-pill.old  { background: rgba(88,166,255,.15); color: var(--accent); }
-  .section-pill.prec { background: rgba(188,140,255,.15); color: var(--ultra); }
-
-  /* ── Cards ── */
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 24px; }
-  .card {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 8px; padding: 16px 18px;
-  }
-  .card .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; margin-bottom: 6px; }
-  .card .value { font-size: 26px; font-weight: 700; }
-  .card .sub   { font-size: 11px; color: var(--muted); margin-top: 4px; }
-  .card.call   .value { color: var(--call); }
-  .card.put    .value { color: var(--put); }
-  .card.accent .value { color: var(--accent); }
-  .card.warn   .value { color: var(--warn); }
-  .card.ultra  .value { color: var(--ultra); }
-
-  /* ── Charts ── */
-  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
-  @media (max-width: 800px) { .charts { grid-template-columns: 1fr; } }
-  .chart-box {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 8px; padding: 18px;
-  }
-  .chart-box h3 { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 14px; }
-  .chart-box canvas { max-height: 220px; }
-
-  /* ── Table ── */
-  .table-wrap {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 8px; overflow: hidden;
-  }
-  .table-toolbar {
-    display: flex; align-items: center; gap: 12px;
-    padding: 12px 16px; border-bottom: 1px solid var(--border);
-    flex-wrap: wrap;
-  }
-  .table-toolbar input, .table-toolbar select {
-    background: var(--bg); border: 1px solid var(--border);
-    color: var(--text); border-radius: 6px; padding: 6px 10px; font-size: 13px;
-    outline: none;
-  }
-  .table-toolbar input { flex: 1; min-width: 160px; }
-  .table-toolbar label { font-size: 12px; color: var(--muted); }
-  .tbl-scroll { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; }
-  thead th {
-    background: var(--header); color: #fff; font-size: 11px; text-transform: uppercase;
-    letter-spacing: .6px; padding: 10px 12px; white-space: nowrap; position: sticky; top: 0;
-  }
-  thead.prec th { background: #2a1f4a; }
-  tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
-  tbody tr:hover { background: rgba(88,166,255,.06); }
-  tbody td { padding: 8px 12px; white-space: nowrap; font-size: 13px; }
-
-  .badge {
-    display: inline-block; padding: 2px 8px; border-radius: 10px;
-    font-size: 11px; font-weight: 700; letter-spacing: .4px;
-  }
-  .badge.CALL         { background: rgba(63,185,80,.18);  color: var(--call); }
-  .badge.PUT          { background: rgba(248,81,73,.18);  color: var(--put); }
-  .badge.NEW          { background: rgba(210,153,34,.18); color: var(--warn); }
-  .badge.ULTRA        { background: rgba(188,140,255,.2); color: var(--ultra); }
-  .badge.STRONG       { background: rgba(88,166,255,.18); color: var(--accent); }
-  .badge.MEDIUM       { background: rgba(210,153,34,.18); color: var(--warn); }
-
-  .score-ultra { color: var(--ultra); font-weight: 700; }
-  .score-high  { color: var(--call);  font-weight: 600; }
-  .score-mid   { color: var(--warn);  font-weight: 600; }
-  .score-low   { color: var(--muted); }
-  .result-PENDING { color: var(--muted); }
-  .result-WIN     { color: var(--call); font-weight: 600; }
-  .result-LOSS    { color: var(--put);  font-weight: 600; }
-  .fib-hit        { color: var(--ultra); font-weight: 700; }
-
-  /* ── Loading ── */
-  #loader {
-    position: fixed; inset: 0; background: var(--bg);
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 16px; z-index: 999;
-  }
-  .spinner {
-    width: 40px; height: 40px; border: 3px solid var(--border);
-    border-top-color: var(--accent); border-radius: 50%;
-    animation: spin .7s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  #loader p { color: var(--muted); font-size: 13px; }
-
-  .error-box {
-    background: rgba(248,81,73,.1); border: 1px solid var(--put);
-    border-radius: 8px; padding: 16px 20px; color: var(--put);
-    margin: 20px 0; font-size: 13px;
-  }
-  .warn-box {
-    background: rgba(210,153,34,.1); border: 1px solid var(--warn);
-    border-radius: 8px; padding: 10px 16px; color: var(--warn);
-    margin-bottom: 16px; font-size: 12px;
-  }
-
-  .empty { padding: 40px; text-align: center; color: var(--muted); }
-  .divider { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d1117;--surface:#161b22;--surface2:#1c2330;--border:#30363d;
+  --text:#e6edf3;--muted:#8b949e;
+  --call:#3fb950;--put:#f85149;--ultra:#d2a8ff;--medium:#e3b341;--weak:#8b949e;
+  --accent:#58a6ff;--radius:8px;
+}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);min-height:100vh;font-size:14px}
+/* Header */
+header{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100;gap:10px;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:700}
+.header-right{display:flex;align-items:center;gap:14px;font-size:12px;color:var(--muted)}
+.sbadge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;border:1px solid}
+.sbadge.running{color:var(--call);border-color:rgba(63,185,80,.4);background:rgba(63,185,80,.08)}
+.sbadge.sleeping{color:var(--medium);border-color:rgba(227,179,65,.4);background:rgba(227,179,65,.08)}
+.sbadge.stopped,.sbadge.connecting{color:var(--muted);border-color:var(--border);background:var(--surface2)}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+.running .dot{animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+/* Tabs */
+.tabs{display:flex;padding:0 24px;border-bottom:1px solid var(--border);background:var(--surface);overflow-x:auto;gap:2px}
+.tbtn{padding:12px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);cursor:pointer;font-size:13px;font-weight:500;white-space:nowrap;transition:.15s}
+.tbtn:hover{color:var(--text)}
+.tbtn.active{color:var(--accent);border-bottom-color:var(--accent)}
+/* Layout */
+main{padding:20px 24px;max-width:1400px;margin:0 auto}
+.panel{display:none}.panel.active{display:block}
+/* Setup banner */
+.setup{background:rgba(88,166,255,.07);border:1px solid rgba(88,166,255,.3);border-radius:var(--radius);padding:18px 22px;margin-bottom:20px;display:none}
+.setup h3{color:var(--accent);margin-bottom:6px}
+.setup code{background:var(--surface2);padding:2px 6px;border-radius:4px;font-size:12px}
+/* Stats row */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:20px}
+.sc{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;text-align:center}
+.sc-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+.sc-val{font-size:22px;font-weight:700}
+/* Instrument cards */
+.igrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px;margin-bottom:24px}
+.icard{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px;transition:.2s}
+.icard.c{border-color:rgba(63,185,80,.4)}.icard.p{border-color:rgba(248,81,73,.4)}
+.ih{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.iname{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.5px}
+.dbadge{padding:3px 10px;border-radius:12px;font-size:11px;font-weight:700}
+.dbadge.c{background:rgba(63,185,80,.12);color:var(--call);border:1px solid rgba(63,185,80,.3)}
+.dbadge.p{background:rgba(248,81,73,.12);color:var(--put); border:1px solid rgba(248,81,73,.3)}
+.bwrap{background:var(--surface2);border-radius:4px;height:8px;margin-bottom:8px;overflow:hidden}
+.bfill{height:100%;border-radius:4px;transition:width .5s ease}
+.srow{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}
+.snum{font-size:28px;font-weight:800}.snum.c{color:var(--call)}.snum.p{color:var(--put)}
+.rbadge{font-size:10px;padding:2px 8px;border-radius:10px;border:1px solid transparent}
+.imeta{display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:12px;color:var(--muted)}
+.imeta b{color:var(--text)}
+/* Signal cards */
+.stitle{font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px}
+.sgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px;margin-bottom:24px}
+.scard{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--border);border-radius:var(--radius);padding:14px 16px}
+.scard.c{border-left-color:var(--call)}.scard.p{border-left-color:var(--put)}.scard.u{border-left-color:var(--ultra)}
+.sch{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.scinstr{font-weight:700;font-size:13px}.sctime{font-size:11px;color:var(--muted)}
+.scb{display:grid;grid-template-columns:1fr 1fr;gap:3px;font-size:12px}
+.scb .l{color:var(--muted)}.scb .v{font-weight:600}
+/* Filters */
+.frow{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px;align-items:center}
+.frow select,.frow input{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);padding:7px 12px;font-size:13px;outline:none}
+.frow select:focus,.frow input:focus{border-color:var(--accent)}
+.btn{padding:7px 16px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface2);color:var(--text);cursor:pointer;font-size:13px}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#0d1117;font-weight:600}.btn.pri:hover{opacity:.9}
+/* Table */
+.twrap{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+thead th{background:var(--surface2);color:var(--muted);padding:10px 12px;text-align:left;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;border-bottom:1px solid var(--border)}
+tbody tr{border-bottom:1px solid var(--border)}.tbody tr:last-child{border-bottom:none}
+tbody tr:hover{background:var(--surface2)}
+td{padding:9px 12px;white-space:nowrap;vertical-align:middle}
+.mini{display:flex;align-items:center;gap:5px}
+.mbar{width:38px;height:5px;background:var(--surface2);border-radius:3px;overflow:hidden}
+.mfill{height:100%;border-radius:3px}
+/* Analytics */
+.agrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:18px;margin-top:20px}
+.ccard{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px}
+.ctitle{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:14px}
+.ccard canvas{max-height:220px}
+/* Scan score cell */
+.sscore{display:inline-flex;align-items:center;gap:4px;font-size:12px}
+.sscore .b{width:34px;height:5px;background:var(--surface2);border-radius:3px;overflow:hidden}
+.sscore .f{height:100%;border-radius:3px}
+/* Misc */
+.empty,.load{text-align:center;padding:36px;color:var(--muted)}
+.info{color:var(--muted);font-size:12px}
+/* Toast */
+#toasts{position:fixed;top:68px;right:18px;z-index:999;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+.toast{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;font-size:13px;max-width:300px;box-shadow:0 4px 20px rgba(0,0,0,.5);pointer-events:all;animation:tin .3s ease}
+.toast.c{border-left:3px solid var(--call)}.toast.p{border-left:3px solid var(--put)}
+@keyframes tin{from{transform:translateX(120%);opacity:0}to{transform:translateX(0);opacity:1}}
+@media(max-width:600px){header,main{padding:10px 14px}.tabs{padding:0 10px}.tbtn{padding:10px 12px}}
 </style>
 </head>
 <body>
+<div id="toasts"></div>
 
-<div id="loader">
-  <div class="spinner"></div>
-  <p id="loader-msg">Loading dashboards…</p>
-</div>
+<!-- ═══ CONFIG — update these after creating your Supabase project ═══════ -->
+<script>
+const SUPABASE_URL      = 'https://YOUR_PROJECT_ID.supabase.co'
+const SUPABASE_ANON_KEY = 'YOUR_ANON_PUBLIC_KEY_HERE'
+</script>
+<!-- ════════════════════════════════════════════════════════════════════════ -->
 
 <header>
-  <h1>NSE <span>Signal Dashboard</span></h1>
-  <span id="last-updated">—</span>
+  <div class="brand"><span>🎯</span><span>Nifty Precision Bot</span></div>
+  <div class="header-right">
+    <span id="sbadge" class="sbadge connecting"><span class="dot"></span><span id="stxt">Connecting…</span></span>
+    <span id="lupd"></span>
+  </div>
 </header>
 
-<div class="container">
+<div class="tabs">
+  <button class="tbtn active" data-tab="live">📡 Live</button>
+  <button class="tbtn" data-tab="signals">📢 Signals</button>
+  <button class="tbtn" data-tab="analytics">📊 Analytics</button>
+  <button class="tbtn" data-tab="scanlog">🔍 Scan Log</button>
+</div>
 
-  <!-- Top-level Tabs -->
-  <div class="tabs">
-    <button class="tab-btn active"      onclick="switchTab('overview')">Overview</button>
-    <button class="tab-btn"             onclick="switchTab('signals')">NSE Signals</button>
-    <button class="tab-btn"             onclick="switchTab('scans')">All Scans</button>
-    <button class="tab-btn"             onclick="switchTab('summary')">Summary</button>
-    <button class="tab-btn prec"        onclick="switchTab('prec-overview')">🎯 Precision Overview</button>
-    <button class="tab-btn prec"        onclick="switchTab('prec-signals')">🎯 Precision Signals</button>
+<main>
+<div class="setup" id="setup">
+  <h3>⚙️ Supabase not configured</h3>
+  <p style="color:var(--muted);margin-top:6px">
+    Open <code>index.html</code>, find the CONFIG block near the top &lt;script&gt; tag and replace<br>
+    <code>SUPABASE_URL</code> and <code>SUPABASE_ANON_KEY</code> with your project values.<br>
+    Get them from <b>Supabase → Project Settings → API</b>.
+  </p>
+</div>
+
+<!-- ══════ LIVE ══════════════════════════════════════════════════ -->
+<div id="p-live" class="panel active">
+  <div class="stats">
+    <div class="sc"><div class="sc-lbl">Today's Scans</div><div id="s0" class="sc-val">—</div></div>
+    <div class="sc"><div class="sc-lbl">Signals Today</div><div id="s1" class="sc-val">—</div></div>
+    <div class="sc"><div class="sc-lbl">India VIX</div>    <div id="s2" class="sc-val">—</div></div>
+    <div class="sc"><div class="sc-lbl">PCR (Nifty)</div>  <div id="s3" class="sc-val">—</div></div>
+    <div class="sc"><div class="sc-lbl">Last Scan</div>    <div id="s4" class="sc-val" style="font-size:15px">—</div></div>
   </div>
 
-  <!-- ══════════════════════════════════════
-       OLD BOT — OVERVIEW
-  ══════════════════════════════════════ -->
-  <div id="tab-overview" class="tab-pane active">
-    <span class="section-pill old">NSE Options Bot — Stock Scanner</span>
-    <div class="cards" id="cards"></div>
-    <div class="charts">
-      <div class="chart-box"><h3>Daily Signals — CALL vs PUT</h3><canvas id="chartDaily"></canvas></div>
-      <div class="chart-box"><h3>Score Distribution</h3><canvas id="chartScore"></canvas></div>
-    </div>
-    <div class="charts">
-      <div class="chart-box"><h3>Market Activity Over Scans (Today)</h3><canvas id="chartActivity"></canvas></div>
-      <div class="chart-box"><h3>Top Signalled Stocks</h3><canvas id="chartTop"></canvas></div>
-    </div>
-  </div>
-
-  <!-- OLD BOT — SIGNALS TAB -->
-  <div id="tab-signals" class="tab-pane">
-    <div class="table-wrap">
-      <div class="table-toolbar">
-        <input id="sig-search" type="text" placeholder="Search symbol, direction, session…" oninput="filterSignals()">
-        <label>Direction:
-          <select id="sig-dir" onchange="filterSignals()">
-            <option value="">All</option><option>CALL</option><option>PUT</option>
-          </select>
-        </label>
-        <label>Date:
-          <select id="sig-date" onchange="filterSignals()"><option value="">All dates</option></select>
-        </label>
-        <label>Result:
-          <select id="sig-result" onchange="filterSignals()">
-            <option value="">All</option><option>PENDING</option><option>WIN</option><option>LOSS</option>
-          </select>
-        </label>
+  <div class="igrid">
+    <div class="icard" id="ic-NIFTY50">
+      <div class="ih"><span class="iname">NIFTY 50</span><span class="dbadge" id="id-NIFTY50">—</span></div>
+      <div class="bwrap"><div class="bfill" id="ib-NIFTY50" style="width:0%"></div></div>
+      <div class="srow">
+        <span class="snum" id="is-NIFTY50">—</span><span style="color:var(--muted)">/100</span>
+        <span class="rbadge" id="ir-NIFTY50"></span>
       </div>
-      <div class="tbl-scroll"><table id="sig-table"><thead></thead><tbody></tbody></table></div>
-    </div>
-  </div>
-
-  <!-- OLD BOT — SCANS TAB -->
-  <div id="tab-scans" class="tab-pane">
-    <div class="table-wrap">
-      <div class="table-toolbar">
-        <input id="scan-search" type="text" placeholder="Search date, session…" oninput="filterScans()">
-        <label>Date:
-          <select id="scan-date" onchange="filterScans()"><option value="">All dates</option></select>
-        </label>
+      <div class="imeta">
+        <span>RSI: <b id="ii-NIFTY50-rsi">—</b></span>
+        <span>LTP: <b id="ii-NIFTY50-ltp">—</b></span>
       </div>
-      <div class="tbl-scroll"><table id="scan-table"><thead></thead><tbody></tbody></table></div>
     </div>
-  </div>
-
-  <!-- OLD BOT — SUMMARY TAB -->
-  <div id="tab-summary" class="tab-pane">
-    <div class="table-wrap">
-      <div class="tbl-scroll"><table id="sum-table"><thead></thead><tbody></tbody></table></div>
-    </div>
-  </div>
-
-  <!-- ══════════════════════════════════════
-       PRECISION BOT — OVERVIEW
-  ══════════════════════════════════════ -->
-  <div id="tab-prec-overview" class="tab-pane">
-    <span class="section-pill prec">Nifty Precision Bot — ORB + Fib + 8-Indicator Confluence</span>
-    <div id="prec-warn" style="display:none" class="warn-box">Nifty_Precision_Bot.xlsx not found — run the bot at least once to generate data.</div>
-    <div class="cards" id="prec-cards"></div>
-    <div class="charts">
-      <div class="chart-box"><h3>Daily Signals — CALL vs PUT</h3><canvas id="pChartDaily"></canvas></div>
-      <div class="chart-box"><h3>Score Distribution</h3><canvas id="pChartScore"></canvas></div>
-    </div>
-    <div class="charts">
-      <div class="chart-box"><h3>Signals by Instrument</h3><canvas id="pChartInstrument"></canvas></div>
-      <div class="chart-box"><h3>Fibonacci Hit Rate</h3><canvas id="pChartFib"></canvas></div>
-    </div>
-  </div>
-
-  <!-- PRECISION BOT — SIGNALS TAB -->
-  <div id="tab-prec-signals" class="tab-pane">
-    <span class="section-pill prec">Nifty Precision Bot — Signals</span>
-    <div class="table-wrap">
-      <div class="table-toolbar">
-        <input id="prec-search" type="text" placeholder="Search instrument, rating, Fib level…" oninput="filterPrec()">
-        <label>Direction:
-          <select id="prec-dir" onchange="filterPrec()">
-            <option value="">All</option><option>CALL</option><option>PUT</option>
-          </select>
-        </label>
-        <label>Instrument:
-          <select id="prec-inst" onchange="filterPrec()">
-            <option value="">All</option>
-            <option>NIFTY50</option><option>BANKNIFTY</option><option>SENSEX</option>
-          </select>
-        </label>
-        <label>Rating:
-          <select id="prec-rating" onchange="filterPrec()">
-            <option value="">All</option>
-            <option>ULTRA STRONG</option><option>STRONG</option><option>MEDIUM</option>
-          </select>
-        </label>
-        <label>Date:
-          <select id="prec-date" onchange="filterPrec()"><option value="">All dates</option></select>
-        </label>
-        <label>Fib Hit:
-          <select id="prec-fib" onchange="filterPrec()">
-            <option value="">All</option><option value="Yes">Yes</option><option value="No">No</option>
-          </select>
-        </label>
+    <div class="icard" id="ic-BANKNIFTY">
+      <div class="ih"><span class="iname">BANKNIFTY</span><span class="dbadge" id="id-BANKNIFTY">—</span></div>
+      <div class="bwrap"><div class="bfill" id="ib-BANKNIFTY" style="width:0%"></div></div>
+      <div class="srow">
+        <span class="snum" id="is-BANKNIFTY">—</span><span style="color:var(--muted)">/100</span>
+        <span class="rbadge" id="ir-BANKNIFTY"></span>
       </div>
-      <div class="tbl-scroll"><table id="prec-table"><thead class="prec"></thead><tbody></tbody></table></div>
+      <div class="imeta">
+        <span>RSI: <b id="ii-BANKNIFTY-rsi">—</b></span>
+        <span>LTP: <b id="ii-BANKNIFTY-ltp">—</b></span>
+      </div>
+    </div>
+    <div class="icard" id="ic-SENSEX">
+      <div class="ih"><span class="iname">SENSEX</span><span class="dbadge" id="id-SENSEX">—</span></div>
+      <div class="bwrap"><div class="bfill" id="ib-SENSEX" style="width:0%"></div></div>
+      <div class="srow">
+        <span class="snum" id="is-SENSEX">—</span><span style="color:var(--muted)">/100</span>
+        <span class="rbadge" id="ir-SENSEX"></span>
+      </div>
+      <div class="imeta">
+        <span>RSI: <b id="ii-SENSEX-rsi">—</b></span>
+        <span>LTP: <b id="ii-SENSEX-ltp">—</b></span>
+      </div>
     </div>
   </div>
 
-</div><!-- /container -->
+  <div class="stitle">Latest Signals Today</div>
+  <div id="lsigs"><div class="load">Loading…</div></div>
+</div>
+
+<!-- ══════ SIGNALS ════════════════════════════════════════════════ -->
+<div id="p-signals" class="panel">
+  <div class="frow">
+    <select id="fi"><option value="">All Instruments</option><option>NIFTY50</option><option>BANKNIFTY</option><option>SENSEX</option></select>
+    <select id="fd"><option value="">All Directions</option><option>CALL</option><option>PUT</option></select>
+    <select id="fr"><option value="">All Ratings</option><option value="ULTRA STRONG">Ultra Strong</option><option>STRONG</option><option>MEDIUM</option><option>WEAK</option></select>
+    <input type="date" id="fdf" placeholder="From"><input type="date" id="fdt" placeholder="To">
+    <button class="btn pri" onclick="sigApply()">Apply</button>
+    <button class="btn" onclick="sigClear()">Clear</button>
+    <span id="sigcnt" class="info"></span>
+  </div>
+  <div class="twrap">
+    <table><thead><tr>
+      <th>Date</th><th>Time</th><th>Instrument</th><th>Dir</th><th>Rating</th>
+      <th>Score</th><th>LTP</th><th>Strike</th><th>SL → Target</th>
+      <th>RSI</th><th>Fib</th><th>VIX</th><th>PCR</th>
+    </tr></thead><tbody id="sigtb"><tr><td colspan="13" class="load">Loading…</td></tr></tbody></table>
+  </div>
+  <div style="display:flex;justify-content:center;align-items:center;gap:12px">
+    <button class="btn" id="sprev" onclick="sigGo(-1)">‹ Prev</button>
+    <span id="spinfo" class="info"></span>
+    <button class="btn" id="snext" onclick="sigGo(1)">Next ›</button>
+  </div>
+</div>
+
+<!-- ══════ ANALYTICS ══════════════════════════════════════════════ -->
+<div id="p-analytics" class="panel">
+  <div class="stats">
+    <div class="sc"><div class="sc-lbl">Total</div>        <div id="at" class="sc-val">—</div></div>
+    <div class="sc"><div class="sc-lbl">CALLs</div>        <div id="ac" class="sc-val" style="color:var(--call)">—</div></div>
+    <div class="sc"><div class="sc-lbl">PUTs</div>         <div id="ap" class="sc-val" style="color:var(--put)">—</div></div>
+    <div class="sc"><div class="sc-lbl">Ultra Strong</div> <div id="au" class="sc-val" style="color:var(--ultra)">—</div></div>
+    <div class="sc"><div class="sc-lbl">Avg Score</div>    <div id="aa" class="sc-val">—</div></div>
+    <div class="sc"><div class="sc-lbl">Best Score</div>   <div id="ab" class="sc-val">—</div></div>
+  </div>
+  <div class="agrid">
+    <div class="ccard"><div class="ctitle">Daily Signals — CALL vs PUT</div><canvas id="ch1"></canvas></div>
+    <div class="ccard"><div class="ctitle">Score Distribution</div><canvas id="ch2"></canvas></div>
+    <div class="ccard"><div class="ctitle">Instrument Breakdown</div><canvas id="ch3"></canvas></div>
+    <div class="ccard"><div class="ctitle">Score Trend (last 60 scans)</div><canvas id="ch4"></canvas></div>
+  </div>
+</div>
+
+<!-- ══════ SCAN LOG ═══════════════════════════════════════════════ -->
+<div id="p-scanlog" class="panel">
+  <div class="frow">
+    <input type="date" id="sld">
+    <button class="btn pri" onclick="loadScans()">Filter</button>
+    <button class="btn" onclick="document.getElementById('sld').value='';loadScans()">Today</button>
+    <span id="slcnt" class="info"></span>
+  </div>
+  <div class="twrap">
+    <table><thead><tr>
+      <th>#</th><th>Date</th><th>Time</th>
+      <th>NIFTY50</th><th>BANKNIFTY</th><th>SENSEX</th>
+      <th>VIX</th><th>PCR</th><th>Signals</th>
+    </tr></thead><tbody id="sltb"><tr><td colspan="9" class="load">Loading…</td></tr></tbody></table>
+  </div>
+</div>
+</main>
 
 <script>
-// ═══════════════════════════════════════════════════════
-//  DATA STORES
-// ═══════════════════════════════════════════════════════
-let sigRows  = [], scanRows = [], sumRows = [];
-let sigAll   = [], scanAll  = [];
-let precRows = [], precAll  = [];
-let charts   = {};
+/* ── Config check ───────────────────────────────────────────────── */
+const _ok = SUPABASE_URL !== 'https://YOUR_PROJECT_ID.supabase.co'
+if(!_ok) document.getElementById('setup').style.display='block'
 
-// ═══════════════════════════════════════════════════════
-//  TAB SWITCH
-// ═══════════════════════════════════════════════════════
-function switchTab(name) {
-  const names = ['overview','signals','scans','summary','prec-overview','prec-signals'];
-  document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', names[i] === name));
-  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-  document.getElementById('tab-' + name).classList.add('active');
-}
+const sb = _ok ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null
+const charts = {}
 
-// ═══════════════════════════════════════════════════════
-//  LOAD EXCEL FILES
-// ═══════════════════════════════════════════════════════
-async function fetchXlsx(filename) {
-  const paths = [`./logs/${filename}`, `logs/${filename}`];
-  for (const p of paths) {
-    try {
-      const res = await fetch(p);
-      if (res.ok) return await res.arrayBuffer();
-    } catch(e) {}
+/* ── Helpers ─────────────────────────────────────────────────────── */
+const fmt = (n,d=0) => n==null?'—':Number(n).toLocaleString('en-IN',{minimumFractionDigits:d,maximumFractionDigits:d})
+const sc  = s => s>=85?'var(--ultra)':s>=75?'var(--call)':s>=65?'var(--medium)':'var(--weak)'
+const rc  = r => !r?'var(--muted)':r.includes('ULTRA')?'var(--ultra)':r==='STRONG'?'var(--call)':r==='MEDIUM'?'var(--medium)':'var(--weak)'
+const rn  = s => s>=85?'ULTRA STRONG':s>=75?'STRONG':s>=65?'MEDIUM':'WEAK'
+const today = () => new Date().toISOString().split('T')[0]
+
+/* ── Tab switching ───────────────────────────────────────────────── */
+document.querySelectorAll('.tbtn').forEach(b=>b.addEventListener('click',()=>{
+  const t=b.dataset.tab
+  document.querySelectorAll('.tbtn').forEach(x=>x.classList.remove('active'))
+  document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'))
+  b.classList.add('active')
+  document.getElementById('p-'+t).classList.add('active')
+  if(t==='signals')  loadSigs()
+  if(t==='analytics')loadAnalytics()
+  if(t==='scanlog')  loadScans()
+}))
+
+/* ── Status UI ───────────────────────────────────────────────────── */
+function setStatus(row){
+  const s=(row.status||'stopped').toLowerCase()
+  const b=document.getElementById('sbadge')
+  b.className=`sbadge ${s}`
+  document.getElementById('stxt').textContent=
+    s==='running'?'🟢 Running':s==='sleeping'?'💤 Sleeping':'🔴 Stopped'
+  document.getElementById('s0').textContent=row.scan_count??'—'
+  document.getElementById('s1').textContent=row.alerts_today??'—'
+  document.getElementById('s2').textContent=row.vix?Number(row.vix).toFixed(1):'—'
+  document.getElementById('s3').textContent=row.pcr?Number(row.pcr).toFixed(2):'—'
+  if(row.last_scan_at){
+    const d=new Date(row.last_scan_at)
+    document.getElementById('s4').textContent=
+      d.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',hour12:true})
   }
-  return null;
+  document.getElementById('lupd').textContent=
+    'Updated '+new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',hour12:true})
 }
 
-function sheetToObjects(wb, name) {
-  const ws = wb.Sheets[name];
-  if (!ws) return [];
-  return XLSX.utils.sheet_to_json(ws, { defval: '' });
+/* ── Instrument cards ────────────────────────────────────────────── */
+function setCard(key, score, dir, rsi, ltp){
+  if(score==null) return
+  const d=dir==='CALL'?'c':'p'
+  const ic=document.getElementById('ic-'+key)
+  ic.className='icard '+d
+  const db=document.getElementById('id-'+key)
+  db.textContent=(dir==='CALL'?'▲ ':'▼ ')+dir; db.className='dbadge '+d
+  const bar=document.getElementById('ib-'+key)
+  bar.style.width=Math.min(100,score)+'%'; bar.style.background=sc(score)
+  const sn=document.getElementById('is-'+key)
+  sn.textContent=score; sn.className='snum '+d
+  const rb=document.getElementById('ir-'+key)
+  const rat=rn(score)
+  rb.textContent=rat; rb.style.color=rc(rat)
+  document.getElementById('ii-'+key+'-rsi').textContent=rsi?Number(rsi).toFixed(1):'—'
+  document.getElementById('ii-'+key+'-ltp').textContent=ltp?fmt(ltp):'—'
 }
 
-async function loadAll() {
-  setLoader('Loading NSE_Bot_Master.xlsx…');
-  const [buf1, buf2] = await Promise.all([
-    fetchXlsx('NSE_Bot_Master.xlsx'),
-    fetchXlsx('Nifty_Precision_Bot.xlsx'),
-  ]);
+function setScan(row){
+  setCard('NIFTY50',  row.nifty50_score,  row.nifty50_dir,  row.nifty50_rsi,  row.nifty50_ltp)
+  setCard('BANKNIFTY',row.banknifty_score,row.banknifty_dir,row.banknifty_rsi,row.banknifty_ltp)
+  setCard('SENSEX',   row.sensex_score,   row.sensex_dir,   row.sensex_rsi,   row.sensex_ltp)
+}
 
-  if (!buf1) throw new Error('Could not fetch logs/NSE_Bot_Master.xlsx — make sure the file is in the repo.');
+/* ── Latest signals on Live tab ──────────────────────────────────── */
+function renderLatest(rows){
+  const w=document.getElementById('lsigs')
+  if(!rows.length){w.innerHTML='<div class="empty">No signals today yet</div>';return}
+  w.innerHTML='<div class="sgrid">'+rows.slice(0,6).map(s=>{
+    const d=s.direction==='CALL'?'c':'p'
+    const u=s.rating?.includes('ULTRA')?'u ':''
+    return `<div class="scard ${u}${d}">
+    <div class="sch">
+      <span class="scinstr"><span class="dbadge ${d}" style="margin-right:5px">${s.direction==='CALL'?'▲':'▼'} ${s.direction}</span>${s.instrument}</span>
+      <span class="sctime">${s.signal_time||''}</span>
+    </div>
+    <div class="scb">
+      <span class="l">Score</span><span class="v" style="color:${sc(s.score)}">${s.score}/100 · ${s.rating||''}</span>
+      <span class="l">LTP</span>  <span class="v">${fmt(s.ltp)}</span>
+      <span class="l">Strike</span><span class="v">${s.strike||'—'} ${s.option_type||''}</span>
+      <span class="l">SL</span>   <span class="v" style="color:var(--put)">${fmt(s.sl_level)}</span>
+      <span class="l">Target</span><span class="v" style="color:var(--call)">${fmt(s.target_level)}</span>
+      <span class="l">Fib</span>  <span class="v">${s.fib_at_level?'✅ '+s.fib_level:'—'}</span>
+    </div></div>`}).join('')+'</div>'
+}
 
-  const wb1 = XLSX.read(buf1, { type: 'array', cellDates: true });
-  sigRows  = sheetToObjects(wb1, 'Signals');
-  scanRows = sheetToObjects(wb1, 'All Scans');
-  sumRows  = sheetToObjects(wb1, 'Summary');
-  sigAll   = [...sigRows];
-  scanAll  = [...scanRows];
+/* ── Toast notifications ─────────────────────────────────────────── */
+function toast(sig){
+  const d=sig.direction==='CALL'?'c':'p'
+  const t=document.createElement('div')
+  t.className=`toast ${d}`
+  t.innerHTML=`<b>${sig.instrument}</b> ${sig.direction==='CALL'?'▲':'▼'} ${sig.direction}
+  — Score <b style="color:${sc(sig.score)}">${sig.score}</b> · ${sig.rating}<br>
+  LTP <b>${fmt(sig.ltp)}</b> · Strike <b>${sig.strike} ${sig.option_type}</b><br>
+  SL <span style="color:var(--put)">${fmt(sig.sl_level)}</span>
+  → T <span style="color:var(--call)">${fmt(sig.target_level)}</span>`
+  document.getElementById('toasts').prepend(t)
+  setTimeout(()=>t.remove(),9000)
+}
 
-  if (buf2) {
-    const wb2 = XLSX.read(buf2, { type: 'array', cellDates: true });
-    precRows = sheetToObjects(wb2, 'Signals');
-    precAll  = [...precRows];
-  } else {
-    document.getElementById('prec-warn').style.display = 'block';
+/* ── Signals table ───────────────────────────────────────────────── */
+let _sigRows=[], _sigPage=0
+const PG=50
+
+function renderSigTable(rows){
+  const tb=document.getElementById('sigtb')
+  if(!rows.length){tb.innerHTML='<tr><td colspan="13" class="empty">No signals found</td></tr>';return}
+  tb.innerHTML=rows.map(s=>{
+    const d=s.direction==='CALL'?'c':'p'
+    const p=Math.min(100,Math.max(0,s.score))
+    return `<tr>
+    <td>${s.signal_date||'—'}</td>
+    <td>${s.signal_time||'—'}</td>
+    <td><b>${s.instrument}</b></td>
+    <td><span class="dbadge ${d}">${s.direction==='CALL'?'▲':'▼'} ${s.direction}</span></td>
+    <td style="color:${rc(s.rating)}">${s.rating||'—'}</td>
+    <td><div class="mini"><div class="mbar"><div class="mfill" style="width:${p}%;background:${sc(s.score)}"></div></div><b style="color:${sc(s.score)}">${s.score}</b></div></td>
+    <td>${fmt(s.ltp)}</td>
+    <td>${s.strike||'—'} <span style="color:var(--muted)">${s.option_type||''}</span></td>
+    <td><span style="color:var(--put)">${fmt(s.sl_level)}</span> → <span style="color:var(--call)">${fmt(s.target_level)}</span></td>
+    <td>${s.rsi?Number(s.rsi).toFixed(1):'—'}</td>
+    <td style="color:${s.fib_at_level?'var(--call)':'var(--muted)'}">${s.fib_at_level?'✅ '+s.fib_level:'—'}</td>
+    <td>${s.vix?Number(s.vix).toFixed(1):'—'}</td>
+    <td>${s.pcr?Number(s.pcr).toFixed(2):'—'}</td>
+    </tr>`}).join('')
+}
+
+async function loadSigs(f={}){
+  if(!sb)return
+  let q=sb.from('signals').select('*').order('created_at',{ascending:false})
+  if(f.i) q=q.eq('instrument',f.i)
+  if(f.d) q=q.eq('direction',f.d)
+  if(f.r) q=q.eq('rating',f.r)
+  if(f.df)q=q.gte('signal_date',f.df)
+  if(f.dt)q=q.lte('signal_date',f.dt)
+  const {data}=await q.range(_sigPage*PG,(_sigPage+1)*PG-1)
+  _sigRows=data||[]
+  renderSigTable(_sigRows)
+  document.getElementById('sigcnt').textContent=`${_sigRows.length} shown`
+  document.getElementById('spinfo').textContent=`Page ${_sigPage+1}`
+  document.getElementById('sprev').disabled=_sigPage===0
+}
+let _sigF={}
+function sigApply(){
+  _sigPage=0
+  _sigF={i:document.getElementById('fi').value,d:document.getElementById('fd').value,
+         r:document.getElementById('fr').value,df:document.getElementById('fdf').value,
+         dt:document.getElementById('fdt').value}
+  loadSigs(_sigF)
+}
+function sigClear(){
+  ['fi','fd','fr','fdf','fdt'].forEach(id=>document.getElementById(id).value='')
+  _sigPage=0;_sigF={};loadSigs()
+}
+function sigGo(dir){_sigPage=Math.max(0,_sigPage+dir);loadSigs(_sigF)}
+
+/* ── Analytics ──────────────────────────────────────────────────── */
+function mkChart(id,type,data,opts={}){
+  const c=document.getElementById(id)
+  if(!c)return
+  if(charts[id])charts[id].destroy()
+  charts[id]=new Chart(c,{type,data,options:{
+    responsive:true,animation:{duration:300},
+    plugins:{legend:{labels:{color:'#8b949e'}},...(opts.plugins||{})},
+    scales:opts.scales||{x:{ticks:{color:'#8b949e'},grid:{color:'rgba(255,255,255,.04)'}},
+                          y:{ticks:{color:'#8b949e'},grid:{color:'rgba(255,255,255,.04)'}}}
+  }})
+}
+
+async function loadAnalytics(){
+  if(!sb)return
+  const {data:sigs}=await sb.from('signals').select('signal_date,direction,rating,score,instrument')
+  if(!sigs?.length)return
+  const tot=sigs.length,cal=sigs.filter(s=>s.direction==='CALL').length
+  const put=sigs.filter(s=>s.direction==='PUT').length
+  const ult=sigs.filter(s=>s.rating?.includes('ULTRA')).length
+  const avg=Math.round(sigs.reduce((a,s)=>a+s.score,0)/tot)
+  const best=Math.max(...sigs.map(s=>s.score))
+  document.getElementById('at').textContent=tot
+  document.getElementById('ac').textContent=cal
+  document.getElementById('ap').textContent=put
+  document.getElementById('au').textContent=ult
+  document.getElementById('aa').textContent=avg
+  document.getElementById('ab').textContent=best
+
+  // Daily bar
+  const byD={}
+  sigs.forEach(s=>{byD[s.signal_date]=byD[s.signal_date]||{C:0,P:0};byD[s.signal_date][s.direction==='CALL'?'C':'P']++})
+  const dates=Object.keys(byD).sort().slice(-30)
+  mkChart('ch1','bar',{labels:dates.map(d=>d.slice(5)),datasets:[
+    {label:'CALL',data:dates.map(d=>byD[d].C||0),backgroundColor:'rgba(63,185,80,.7)'},
+    {label:'PUT', data:dates.map(d=>byD[d].P||0),backgroundColor:'rgba(248,81,73,.7)'}
+  ]},{scales:{x:{stacked:true,ticks:{color:'#8b949e'},grid:{display:false}},
+              y:{stacked:true,ticks:{color:'#8b949e'},grid:{color:'rgba(255,255,255,.04)'}}}})
+
+  // Score histogram
+  const bkts=[0,50,60,65,70,75,80,85,90,101]
+  const lbls=['<50','50-59','60-64','65-69','70-74','75-79','80-84','85-89','90+']
+  const hist=Array(9).fill(0)
+  sigs.forEach(s=>{for(let i=0;i<bkts.length-1;i++)if(s.score>=bkts[i]&&s.score<bkts[i+1]){hist[i]++;break}})
+  const hcols=hist.map((_,i)=>i>=7?'rgba(210,168,255,.8)':i>=5?'rgba(63,185,80,.8)':i>=3?'rgba(227,179,65,.8)':'rgba(139,148,158,.6)')
+  mkChart('ch2','bar',{labels:lbls,datasets:[{label:'Signals',data:hist,backgroundColor:hcols}]},
+    {plugins:{legend:{display:false}}})
+
+  // Donut
+  const inm={}
+  sigs.forEach(s=>inm[s.instrument]=(inm[s.instrument]||0)+1)
+  mkChart('ch3','doughnut',{labels:Object.keys(inm),
+    datasets:[{data:Object.values(inm),backgroundColor:['#58a6ff','#3fb950','#e3b341'],
+               borderColor:'#161b22',borderWidth:2}]},
+    {plugins:{legend:{position:'bottom',labels:{color:'#8b949e'}}}})
+
+  // Score trend
+  const {data:sc2}=await sb.from('scans').select('scan_time,nifty50_score,banknifty_score,sensex_score')
+    .order('created_at',{ascending:false}).limit(60)
+  if(sc2?.length){
+    const r=[...sc2].reverse()
+    mkChart('ch4','line',{labels:r.map(s=>s.scan_time||''),datasets:[
+      {label:'NIFTY50',  data:r.map(s=>s.nifty50_score),  borderColor:'#58a6ff',fill:false,tension:.3,pointRadius:2},
+      {label:'BANKNIFTY',data:r.map(s=>s.banknifty_score),borderColor:'#3fb950',fill:false,tension:.3,pointRadius:2},
+      {label:'SENSEX',   data:r.map(s=>s.sensex_score),   borderColor:'#e3b341',fill:false,tension:.3,pointRadius:2},
+    ]},{scales:{y:{min:0,max:100,ticks:{color:'#8b949e'},grid:{color:'rgba(255,255,255,.04)'}},
+                x:{ticks:{maxTicksLimit:12,color:'#8b949e'},grid:{display:false}}},
+        plugins:{legend:{labels:{color:'#8b949e'}}}})
   }
-
-  document.getElementById('last-updated').textContent =
-    'Updated ' + new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST';
 }
 
-function setLoader(msg) { document.getElementById('loader-msg').textContent = msg; }
-
-// ═══════════════════════════════════════════════════════
-//  OLD BOT — OVERVIEW
-// ═══════════════════════════════════════════════════════
-function renderOverview() {
-  const validSig = sigRows.filter(r => r['Symbol'] && r['Direction']);
-  const calls    = validSig.filter(r => r['Direction'] === 'CALL').length;
-  const puts     = validSig.filter(r => r['Direction'] === 'PUT').length;
-  const scores   = validSig.map(r => +r['Score /100']).filter(s => s > 0);
-  const best     = scores.length ? Math.max(...scores) : 0;
-  const today    = todayDate();
-  const todaySig = validSig.filter(r => String(r['Date']).startsWith(today));
-
-  document.getElementById('cards').innerHTML = `
-    <div class="card accent"><div class="label">Total Signals</div><div class="value">${validSig.length}</div><div class="sub">all time</div></div>
-    <div class="card call"><div class="label">CALLs</div><div class="value">${calls}</div><div class="sub">${pct(calls, validSig.length)}% of signals</div></div>
-    <div class="card put"><div class="label">PUTs</div><div class="value">${puts}</div><div class="sub">${pct(puts, validSig.length)}% of signals</div></div>
-    <div class="card warn"><div class="label">Best Score</div><div class="value">${best}</div><div class="sub">/100</div></div>
-    <div class="card accent"><div class="label">Today's Signals</div><div class="value">${todaySig.length}</div><div class="sub">${today}</div></div>
-    <div class="card"><div class="label">Total Scans</div><div class="value">${scanRows.length}</div><div class="sub">all sessions</div></div>
-  `;
-  buildDailyChart(validSig);
-  buildScoreChart(scores);
-  buildActivityChart();
-  buildTopChart(validSig);
-}
-
-function buildDailyChart(rows) {
-  const byDate = {};
-  rows.forEach(r => {
-    const d = String(r['Date']).slice(0,10);
-    if (!d || d === 'undefined') return;
-    byDate[d] = byDate[d] || { CALL:0, PUT:0 };
-    byDate[d][r['Direction']]++;
-  });
-  const dates = Object.keys(byDate).sort().slice(-20);
-  dc('chartDaily', {
-    type: 'bar',
-    data: {
-      labels: dates,
-      datasets: [
-        { label:'CALL', data: dates.map(d=>byDate[d].CALL||0), backgroundColor:'rgba(63,185,80,.7)' },
-        { label:'PUT',  data: dates.map(d=>byDate[d].PUT||0),  backgroundColor:'rgba(248,81,73,.7)' }
-      ]
-    },
-    options: chartOpts({ stacked: true })
-  });
-}
-
-function buildScoreChart(scores) {
-  const buckets = [40,50,60,70,80,90,101];
-  const labels  = ['40-49','50-59','60-69','70-79','80-89','90+'];
-  const counts  = new Array(6).fill(0);
-  scores.forEach(s => { const i = buckets.findIndex(b => s < b) - 1; if (i >= 0) counts[i]++; });
-  dc('chartScore', {
-    type: 'bar',
-    data: { labels, datasets: [{ label:'Signals', data: counts, backgroundColor:'rgba(88,166,255,.7)' }] },
-    options: chartOpts({})
-  });
-}
-
-function buildActivityChart() {
-  const today = todayDate();
-  const todayScans = scanRows.filter(r => String(r['Date']).startsWith(today));
-  const labels = todayScans.map(r => String(r['Time']).slice(0,5));
-  const data   = todayScans.map(r => +r['Activity /100'] || 0);
-  dc('chartActivity', {
-    type: 'line',
-    data: { labels, datasets: [{ label:'Activity', data, borderColor:'rgba(210,153,34,.9)',
-      backgroundColor:'rgba(210,153,34,.15)', fill:true, tension:.3, pointRadius:2 }] },
-    options: chartOpts({ yMax: 100 })
-  });
-}
-
-function buildTopChart(rows) {
-  const cnt = {};
-  rows.forEach(r => { if (r['Symbol']) cnt[r['Symbol']] = (cnt[r['Symbol']]||0)+1; });
-  const top = Object.entries(cnt).sort((a,b)=>b[1]-a[1]).slice(0,10);
-  dc('chartTop', {
-    type: 'bar',
-    data: { labels: top.map(x=>x[0]), datasets: [{ label:'Signals', data: top.map(x=>x[1]), backgroundColor:'rgba(88,166,255,.7)' }] },
-    options: chartOpts({ indexAxis: 'y' })
-  });
-}
-
-// ═══════════════════════════════════════════════════════
-//  OLD BOT — SIGNALS TABLE
-// ═══════════════════════════════════════════════════════
-function renderSignals() {
-  const headers = ['Date','Time','Symbol','Direction','LTP (Rs)','Day Chg %',
-    'Vol Surge %','OI Build %','Score /100','Buildup','Signal Type','Tag',
-    'Suggested Strike','SL (Rs)','Target (Rs)','Session','Market Activity',
-    'Entry Premium','Exit Premium','P&L (Rs)','Result','Notes','India VIX','Nifty PCR'];
-  buildTableHead('sig-table', headers, false);
-
-  const sel   = document.getElementById('sig-date');
-  const dates = uniqueDates(sigAll, 'Date');
-  sel.innerHTML = '<option value="">All dates</option>' + dates.map(d=>`<option>${d}</option>`).join('');
-  renderSignalRows(sigAll);
-}
-
-function filterSignals() {
-  const q   = document.getElementById('sig-search').value.toLowerCase();
-  const dir = document.getElementById('sig-dir').value;
-  const dt  = document.getElementById('sig-date').value;
-  const res = document.getElementById('sig-result').value;
-  renderSignalRows(sigAll.filter(r => {
-    if (dir && r['Direction'] !== dir) return false;
-    if (dt  && !String(r['Date']).startsWith(dt)) return false;
-    if (res && r['Result'] !== res) return false;
-    if (q && !Object.values(r).join(' ').toLowerCase().includes(q)) return false;
-    return true;
-  }));
-}
-
-function renderSignalRows(rows) {
-  const valid = rows.filter(r => r['Symbol'] && r['Direction']);
-  const tbody = document.querySelector('#sig-table tbody');
-  if (!valid.length) { tbody.innerHTML = '<tr><td colspan="24" class="empty">No signals match</td></tr>'; return; }
-  tbody.innerHTML = valid.slice().reverse().map(r => {
-    const dir   = r['Direction'];
-    const score = +r['Score /100'] || 0;
-    const sCls  = score >= 70 ? 'score-high' : score >= 50 ? 'score-mid' : 'score-low';
-    const chg   = +r['Day Chg %'] || 0;
-    const chgCls = chg > 0 ? 'style="color:var(--call)"' : chg < 0 ? 'style="color:var(--put)"' : '';
-    return `<tr>
-      <td>${r['Date']||''}</td><td>${r['Time']||''}</td>
-      <td><strong>${r['Symbol']||''}</strong></td>
-      <td><span class="badge ${dir}">${dir}</span></td>
-      <td>${r['LTP (Rs)']||''}</td>
-      <td ${chgCls}>${r['Day Chg %']||''}</td>
-      <td>${r['Vol Surge %']||''}</td><td>${r['OI Build %']||''}</td>
-      <td class="${sCls}">${score||''}</td>
-      <td>${r['Buildup']||''}</td><td>${r['Signal Type']||''}</td>
-      <td><span class="badge ${r['Tag']||''}">${r['Tag']||''}</span></td>
-      <td>${r['Suggested Strike']||''}</td><td>${r['SL (Rs)']||''}</td><td>${r['Target (Rs)']||''}</td>
-      <td>${r['Session']||''}</td><td>${r['Market Activity']||''}</td>
-      <td>${r['Entry Premium']||''}</td><td>${r['Exit Premium']||''}</td><td>${r['P&L (Rs)']||''}</td>
-      <td class="result-${r['Result']||'PENDING'}">${r['Result']||''}</td>
-      <td>${r['Notes']||''}</td>
-      <td>${vixCell(r['India VIX'])}</td><td>${pcrCell(r['Nifty PCR'])}</td>
-    </tr>`;
-  }).join('');
-}
-
-// ═══════════════════════════════════════════════════════
-//  OLD BOT — SCANS
-// ═══════════════════════════════════════════════════════
-function renderScans() {
-  buildTableHead('scan-table', ['Date','Time','Scan #','Total Stocks','Activity /100','Session','Signals Sent','Stocks Alerted'], false);
-  const sel   = document.getElementById('scan-date');
-  const dates = uniqueDates(scanAll, 'Date');
-  sel.innerHTML = '<option value="">All dates</option>' + dates.map(d=>`<option>${d}</option>`).join('');
-  renderScanRows(scanAll);
-}
-
-function filterScans() {
-  const q  = document.getElementById('scan-search').value.toLowerCase();
-  const dt = document.getElementById('scan-date').value;
-  renderScanRows(scanAll.filter(r => {
-    if (dt && !String(r['Date']).startsWith(dt)) return false;
-    if (q && !Object.values(r).join(' ').toLowerCase().includes(q)) return false;
-    return true;
-  }));
-}
-
-function renderScanRows(rows) {
-  const tbody = document.querySelector('#scan-table tbody');
-  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="8" class="empty">No scans yet</td></tr>'; return; }
-  tbody.innerHTML = rows.slice().reverse().map(r => {
-    const act  = +r['Activity /100'] || 0;
-    const sent = +r['Signals Sent']  || 0;
-    return `<tr>
-      <td>${r['Date']||''}</td><td>${r['Time']||''}</td><td>${r['Scan #']||''}</td>
-      <td>${r['Total Stocks']||''}</td>
-      <td class="${act>=60?'score-high':act>=30?'score-mid':'score-low'}">${act}</td>
-      <td>${r['Session']||''}</td>
-      <td ${sent>0?'style="color:var(--call);font-weight:600"':''}>${sent}</td>
-      <td style="max-width:280px;white-space:normal">${r['Stocks Alerted']||'—'}</td>
-    </tr>`;
-  }).join('');
-}
-
-// ═══════════════════════════════════════════════════════
-//  OLD BOT — SUMMARY
-// ═══════════════════════════════════════════════════════
-function renderSummary() {
-  buildTableHead('sum-table', ['Date','Total Scans','Stocks w/ Signal','CALLs','PUTs','Avg Score','Best Score','Best Stock'], false);
-  const tbody = document.querySelector('#sum-table tbody');
-  const valid = sumRows.filter(r => r['Date']);
-  if (!valid.length) { tbody.innerHTML = '<tr><td colspan="8" class="empty">No summary data yet</td></tr>'; return; }
-  tbody.innerHTML = valid.slice().reverse().map(r => {
-    const best = +r['Best Score'] || 0;
-    return `<tr>
-      <td><strong>${r['Date']||''}</strong></td><td>${r['Total Scans']||''}</td>
-      <td>${r['Stocks w/ Signal']||''}</td>
-      <td style="color:var(--call);font-weight:600">${r['CALLs']||0}</td>
-      <td style="color:var(--put);font-weight:600">${r['PUTs']||0}</td>
-      <td>${r['Avg Score']||''}</td>
-      <td class="${best>=70?'score-high':best>=50?'score-mid':'score-low'}">${best||''}</td>
-      <td><strong>${r['Best Stock']||'—'}</strong></td>
-    </tr>`;
-  }).join('');
-}
-
-// ═══════════════════════════════════════════════════════
-//  PRECISION BOT — OVERVIEW
-// ═══════════════════════════════════════════════════════
-function renderPrecOverview() {
-  const valid  = precRows.filter(r => r['Instrument'] && r['Direction']);
-  const calls  = valid.filter(r => r['Direction'] === 'CALL').length;
-  const puts   = valid.filter(r => r['Direction'] === 'PUT').length;
-  const ultra  = valid.filter(r => String(r['Rating']).includes('ULTRA')).length;
-  const scores = valid.map(r => +r['Score /100']).filter(s => s > 0);
-  const best   = scores.length ? Math.max(...scores) : 0;
-  const avgSc  = scores.length ? Math.round(scores.reduce((a,b)=>a+b,0)/scores.length) : 0;
-  const today  = todayDate();
-  const todayV = valid.filter(r => String(r['Date']).startsWith(today));
-  const fibHit = valid.filter(r => String(r['Fib At Level?']).toLowerCase() === 'yes').length;
-
-  document.getElementById('prec-cards').innerHTML = `
-    <div class="card ultra"><div class="label">Total Signals</div><div class="value">${valid.length}</div><div class="sub">all time</div></div>
-    <div class="card call"><div class="label">CALLs</div><div class="value">${calls}</div><div class="sub">${pct(calls,valid.length)}%</div></div>
-    <div class="card put"><div class="label">PUTs</div><div class="value">${puts}</div><div class="sub">${pct(puts,valid.length)}%</div></div>
-    <div class="card ultra"><div class="label">Ultra Strong</div><div class="value">${ultra}</div><div class="sub">score ≥ 85</div></div>
-    <div class="card warn"><div class="label">Best Score</div><div class="value">${best}</div><div class="sub">avg ${avgSc}</div></div>
-    <div class="card accent"><div class="label">Today's</div><div class="value">${todayV.length}</div><div class="sub">${today}</div></div>
-    <div class="card"><div class="label">Fib Hits</div><div class="value">${fibHit}</div><div class="sub">${pct(fibHit,valid.length)}% at Fib level</div></div>
-  `;
-
-  buildPrecDailyChart(valid);
-  buildPrecScoreChart(scores);
-  buildPrecInstrumentChart(valid);
-  buildPrecFibChart(valid);
-}
-
-function buildPrecDailyChart(rows) {
-  const byDate = {};
-  rows.forEach(r => {
-    const d = String(r['Date']).slice(0,10);
-    if (!d || d === 'undefined') return;
-    byDate[d] = byDate[d] || { CALL:0, PUT:0 };
-    byDate[d][r['Direction']]++;
-  });
-  const dates = Object.keys(byDate).sort().slice(-20);
-  dc('pChartDaily', {
-    type: 'bar',
-    data: {
-      labels: dates,
-      datasets: [
-        { label:'CALL', data: dates.map(d=>byDate[d].CALL||0), backgroundColor:'rgba(63,185,80,.7)' },
-        { label:'PUT',  data: dates.map(d=>byDate[d].PUT||0),  backgroundColor:'rgba(248,81,73,.7)' }
-      ]
-    },
-    options: chartOpts({ stacked: true })
-  });
-}
-
-function buildPrecScoreChart(scores) {
-  const buckets = [65,70,75,80,85,90,101];
-  const labels  = ['65-69','70-74','75-79','80-84','85-89','90+'];
-  const counts  = new Array(6).fill(0);
-  const colors  = [
-    'rgba(139,148,158,.7)', 'rgba(88,166,255,.6)', 'rgba(88,166,255,.9)',
-    'rgba(63,185,80,.7)',   'rgba(63,185,80,.9)',   'rgba(188,140,255,.9)'
-  ];
-  scores.forEach(s => { const i = buckets.findIndex(b => s < b) - 1; if (i >= 0) counts[i]++; });
-  dc('pChartScore', {
-    type: 'bar',
-    data: { labels, datasets: [{ label:'Signals', data: counts, backgroundColor: colors }] },
-    options: chartOpts({})
-  });
-}
-
-function buildPrecInstrumentChart(rows) {
-  const cnt = { NIFTY50:0, BANKNIFTY:0, SENSEX:0 };
-  rows.forEach(r => { if (cnt[r['Instrument']] !== undefined) cnt[r['Instrument']]++; });
-  dc('pChartInstrument', {
-    type: 'doughnut',
-    data: {
-      labels: Object.keys(cnt),
-      datasets: [{
-        data: Object.values(cnt),
-        backgroundColor: ['rgba(88,166,255,.8)','rgba(188,140,255,.8)','rgba(210,153,34,.8)']
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: true,
-      plugins: { legend: { labels: { color:'#8b949e', font:{size:11} } } }
-    }
-  });
-}
-
-function buildPrecFibChart(rows) {
-  const byLevel = {};
-  rows.forEach(r => {
-    const lv = r['Fib Level'] || 'none';
-    const hit = String(r['Fib At Level?']).toLowerCase() === 'yes';
-    if (!byLevel[lv]) byLevel[lv] = { hit:0, miss:0 };
-    if (hit) byLevel[lv].hit++; else byLevel[lv].miss++;
-  });
-  const labels = ['0.236','0.382','0.500','0.618','0.786','none'];
-  const hits   = labels.map(l => (byLevel[l]||{}).hit  || 0);
-  const misses = labels.map(l => (byLevel[l]||{}).miss || 0);
-  dc('pChartFib', {
-    type: 'bar',
-    data: {
-      labels,
-      datasets: [
-        { label:'At Level (entry)', data: hits,   backgroundColor:'rgba(188,140,255,.8)' },
-        { label:'Near (no entry)',  data: misses,  backgroundColor:'rgba(88,166,255,.4)' }
-      ]
-    },
-    options: chartOpts({ stacked: true })
-  });
-}
-
-// ═══════════════════════════════════════════════════════
-//  PRECISION BOT — SIGNALS TABLE
-// ═══════════════════════════════════════════════════════
-function renderPrecSignals() {
-  const headers = [
-    'Date','Time','Instrument','Direction','Strike','Option',
-    'LTP','Score','Rating','R:R','Conds /8',
-    'EMA9','EMA21','VWAP','RSI(14)','SuperTrend',
-    'ORB H','ORB L','PDH','PDL',
-    'CPR Top','CPR Bot','CPR Narrow',
-    'Fib Level','Fib Price','Fib Dist%','Fib Hit?',
-    'SL Level','SL Pts','Target','Tgt Pts',
-    'VIX','PCR',
-    'Entry Prem','Exit Prem','P&L','Result','Notes'
-  ];
-  buildTableHead('prec-table', headers, true);
-
-  const sel   = document.getElementById('prec-date');
-  const dates = uniqueDates(precAll, 'Date');
-  sel.innerHTML = '<option value="">All dates</option>' + dates.map(d=>`<option>${d}</option>`).join('');
-  renderPrecRows(precAll);
-}
-
-function filterPrec() {
-  const q    = document.getElementById('prec-search').value.toLowerCase();
-  const dir  = document.getElementById('prec-dir').value;
-  const inst = document.getElementById('prec-inst').value;
-  const rat  = document.getElementById('prec-rating').value;
-  const dt   = document.getElementById('prec-date').value;
-  const fib  = document.getElementById('prec-fib').value;
-  renderPrecRows(precAll.filter(r => {
-    if (dir  && r['Direction']    !== dir)  return false;
-    if (inst && r['Instrument']   !== inst) return false;
-    if (rat  && r['Rating']       !== rat)  return false;
-    if (dt   && !String(r['Date']).startsWith(dt)) return false;
-    if (fib  && String(r['Fib At Level?']) !== fib) return false;
-    if (q && !Object.values(r).join(' ').toLowerCase().includes(q)) return false;
-    return true;
-  }));
-}
-
-function renderPrecRows(rows) {
-  const valid = rows.filter(r => r['Instrument'] && r['Direction']);
-  const tbody = document.querySelector('#prec-table tbody');
-  if (!valid.length) { tbody.innerHTML = '<tr><td colspan="37" class="empty">No precision signals match</td></tr>'; return; }
-  tbody.innerHTML = valid.slice().reverse().map(r => {
-    const dir    = r['Direction'];
-    const score  = +r['Score /100'] || 0;
-    const sCls   = score >= 85 ? 'score-ultra' : score >= 75 ? 'score-high' : score >= 65 ? 'score-mid' : 'score-low';
-    const rating = String(r['Rating'] || '');
-    const rBadge = rating.includes('ULTRA') ? 'ULTRA' : rating.includes('STRONG') ? 'STRONG' : 'MEDIUM';
-    const fibHit = String(r['Fib At Level?']).toLowerCase() === 'yes';
-    const fibLv  = r['Fib Level'] || '—';
-    const fibPr  = r['Fib Price'] || '—';
-    const fibDs  = r['Fib Dist %'] || '—';
-    const st     = String(r['SuperTrend'] || '');
-    const stIcon = st === 'Bull' ? '<span style="color:var(--call)">↑ Bull</span>' : st === 'Bear' ? '<span style="color:var(--put)">↓ Bear</span>' : st;
-    const cpNarrow = String(r['CPR Narrow?'] || '');
-    return `<tr>
-      <td>${r['Date']||''}</td><td>${r['Time']||''}</td>
-      <td><strong>${r['Instrument']||''}</strong></td>
-      <td><span class="badge ${dir}">${dir}</span></td>
-      <td><strong>${r['Strike']||''}</strong></td><td>${r['Option']||''}</td>
-      <td><strong>${r['LTP']||''}</strong></td>
-      <td class="${sCls}">${score||''}</td>
-      <td><span class="badge ${rBadge}">${rating}</span></td>
-      <td style="color:var(--ultra);font-weight:600">${r['R:R']||''}</td>
-      <td>${r['Conds Met /8']||''}</td>
-      <td>${r['EMA9']||''}</td><td>${r['EMA21']||''}</td><td>${r['VWAP']||''}</td>
-      <td>${r['RSI(14)']||''}</td><td>${stIcon}</td>
-      <td>${r['ORB High']||''}</td><td>${r['ORB Low']||''}</td>
-      <td>${r['PDH']||''}</td><td>${r['PDL']||''}</td>
-      <td>${r['CPR Top']||''}</td><td>${r['CPR Bottom']||''}</td>
-      <td>${cpNarrow === 'Yes' ? '<span style="color:var(--call)">Yes</span>' : cpNarrow}</td>
-      <td class="${fibHit?'fib-hit':''}">${fibLv}</td>
-      <td class="${fibHit?'fib-hit':''}">${fibPr}</td>
-      <td>${fibDs}</td>
-      <td>${fibHit ? '<span class="fib-hit">✓ Yes</span>' : '<span style="color:var(--muted)">No</span>'}</td>
-      <td style="color:var(--put)">${r['SL Level']||''}</td><td>${r['SL Pts']||''}</td>
-      <td style="color:var(--call)">${r['Target Level']||''}</td><td>${r['Target Pts']||''}</td>
-      <td>${vixCell(r['VIX'])}</td><td>${pcrCell(r['PCR'])}</td>
-      <td>${r['Entry Premium']||''}</td><td>${r['Exit Premium']||''}</td>
-      <td>${r['P&L (Rs)']||''}</td>
-      <td class="result-${r['Result']||'PENDING'}">${r['Result']||''}</td>
-      <td style="max-width:160px;white-space:normal">${r['Notes']||''}</td>
-    </tr>`;
-  }).join('');
-}
-
-// ═══════════════════════════════════════════════════════
-//  VIX / PCR CELL HELPERS
-// ═══════════════════════════════════════════════════════
-function vixCell(v) {
-  if (v === '' || v == null) return '—';
-  v = parseFloat(v); if (isNaN(v)) return '—';
-  const color = v > 25 ? 'var(--put)' : v > 20 ? 'var(--warn)' : v < 12 ? 'var(--call)' : 'var(--muted)';
-  const tag   = v > 25 ? '🔴' : v > 20 ? '🟠' : v < 12 ? '🟢' : '🟡';
-  return `<span style="color:${color};font-weight:600">${tag} ${v.toFixed(1)}</span>`;
-}
-function pcrCell(p) {
-  if (p === '' || p == null) return '—';
-  p = parseFloat(p); if (isNaN(p)) return '—';
-  const color = p >= 1.2 ? 'var(--call)' : p <= 0.8 ? 'var(--put)' : 'var(--muted)';
-  const tag   = p >= 1.5 ? '🟢🟢' : p >= 1.2 ? '🟢' : p <= 0.6 ? '🔴🔴' : p <= 0.8 ? '🔴' : '🟡';
-  return `<span style="color:${color};font-weight:600">${tag} ${p.toFixed(2)}</span>`;
-}
-
-// ═══════════════════════════════════════════════════════
-//  CHART / TABLE HELPERS
-// ═══════════════════════════════════════════════════════
-function dc(id, config) {
-  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
-  charts[id] = new Chart(document.getElementById(id), config);
-}
-
-function chartOpts({ stacked=false, yMax, indexAxis }={}) {
-  return {
-    responsive: true, maintainAspectRatio: true,
-    indexAxis: indexAxis || 'x',
-    plugins: { legend: { labels: { color:'#8b949e', font:{size:11} } } },
-    scales: {
-      x: { stacked, ticks:{color:'#8b949e',font:{size:10}}, grid:{color:'rgba(48,54,61,.8)'} },
-      y: { stacked, max: yMax, ticks:{color:'#8b949e',font:{size:10}}, grid:{color:'rgba(48,54,61,.8)'} }
-    }
-  };
-}
-
-function buildTableHead(id, headers, prec) {
-  const tr = '<tr>' + headers.map(h=>`<th>${h}</th>`).join('') + '</tr>';
-  const thead = document.querySelector('#' + id + ' thead');
-  thead.innerHTML = tr;
-  if (prec) thead.classList.add('prec'); else thead.classList.remove('prec');
-}
-
-function uniqueDates(rows, col) {
-  return [...new Set(rows.map(r=>String(r[col]).slice(0,10)).filter(Boolean))].sort().reverse();
-}
-
-function pct(n, total) { return total ? Math.round(n/total*100) : 0; }
-function todayDate() { return new Date().toLocaleDateString('en-CA', { timeZone:'Asia/Kolkata' }); }
-
-// ═══════════════════════════════════════════════════════
-//  BOOT
-// ═══════════════════════════════════════════════════════
-(async () => {
-  try {
-    await loadAll();
-    renderOverview();
-    renderSignals();
-    renderScans();
-    renderSummary();
-    renderPrecOverview();
-    renderPrecSignals();
-  } catch(e) {
-    document.querySelector('.container').insertAdjacentHTML('afterbegin',
-      `<div class="error-box">⚠ ${e.message}</div>`);
-  } finally {
-    document.getElementById('loader').style.display = 'none';
+/* ── Scan log ────────────────────────────────────────────────────── */
+async function loadScans(){
+  if(!sb)return
+  const d=document.getElementById('sld').value||today()
+  const {data}=await sb.from('scans').select('*').eq('scan_date',d).order('created_at',{ascending:false})
+  const rows=data||[]
+  document.getElementById('slcnt').textContent=`${rows.length} scans`
+  const tb=document.getElementById('sltb')
+  if(!rows.length){tb.innerHTML='<tr><td colspan="9" class="empty">No scans on this date</td></tr>';return}
+  const ms=(sc2,dr)=>{
+    if(sc2==null)return'—'
+    const d=dr==='CALL'?'c':'p',p=Math.min(100,Math.max(0,sc2)),col=sc(sc2)
+    return `<div class="sscore"><div class="b"><div class="f" style="width:${p}%;background:${col}"></div></div>
+    <span style="color:${col}">${sc2}</span>
+    <span class="dbadge ${d}" style="font-size:10px;padding:1px 5px">${dr==='CALL'?'▲':'▼'}</span></div>`
   }
-})();
+  tb.innerHTML=rows.map(r=>`<tr>
+    <td style="color:var(--muted)">#${r.scan_number||'—'}</td>
+    <td>${r.scan_date||'—'}</td><td>${r.scan_time||'—'}</td>
+    <td>${ms(r.nifty50_score,r.nifty50_dir)}</td>
+    <td>${ms(r.banknifty_score,r.banknifty_dir)}</td>
+    <td>${ms(r.sensex_score,r.sensex_dir)}</td>
+    <td>${r.vix?Number(r.vix).toFixed(1):'—'}</td>
+    <td>${r.pcr?Number(r.pcr).toFixed(2):'—'}</td>
+    <td>${r.signals_count>0?`<span style="color:var(--call)">${r.signals_count} 🔔</span>`:'—'}</td>
+  </tr>`).join('')
+}
+
+/* ── Real-time ───────────────────────────────────────────────────── */
+function startRealtime(){
+  if(!sb)return
+  sb.channel('live')
+    .on('postgres_changes',{event:'UPDATE',schema:'public',table:'bot_status'},
+        ({new:r})=>setStatus(r))
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'scans'},
+        ({new:r})=>{
+          setScan(r)
+          if(document.getElementById('p-scanlog').classList.contains('active'))loadScans()
+        })
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'signals'},
+        ({new:r})=>{
+          toast(r)
+          if(document.getElementById('p-live').classList.contains('active'))loadTodaySigs()
+          if(document.getElementById('p-signals').classList.contains('active'))loadSigs(_sigF)
+        })
+    .subscribe()
+}
+
+/* ── Boot ────────────────────────────────────────────────────────── */
+async function loadTodaySigs(){
+  if(!sb)return
+  const {data}=await sb.from('signals').select('*').eq('signal_date',today()).order('created_at',{ascending:false})
+  renderLatest(data||[])
+}
+async function boot(){
+  if(!sb)return
+  const [{data:bs},{data:sc3}]=await Promise.all([
+    sb.from('bot_status').select('*').eq('id',1).single(),
+    sb.from('scans').select('*').order('created_at',{ascending:false}).limit(1)
+  ])
+  if(bs) setStatus(bs)
+  if(sc3?.[0]) setScan(sc3[0])
+  await loadTodaySigs()
+  startRealtime()
+}
+document.addEventListener('DOMContentLoaded',boot)
 </script>
 </body>
 </html>
