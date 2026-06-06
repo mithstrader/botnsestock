@@ -22,12 +22,12 @@ import os, platform   # needed before config block below
 # ═══════════════════════════════════════════════════════════════
 
 # ── Bot 1 : Every scan summary (score bars, RSI, LTP every 5 min) ──
-SCAN_TG_TOKEN  = os.environ.get("SCAN_TG_TOKEN",  "YOUR_SCAN_BOT_TOKEN")   # @BotFather → /newbot
-SCAN_TG_CHAT   = os.environ.get("SCAN_TG_CHAT",   "YOUR_SCAN_CHAT_ID")
+SCAN_TG_TOKEN  = os.environ.get("SCAN_TG_TOKEN",  "8795392223:AAEc_4fwzYaai1acUeJC63_TECUkicX8hN0")
+SCAN_TG_CHAT   = os.environ.get("SCAN_TG_CHAT",   "670433968")
 
 # ── Bot 2 : Confirmed signals only (score ≥75, startup, EOD) ───────
-SIGNAL_TG_TOKEN = os.environ.get("SIGNAL_TG_TOKEN", "YOUR_SIGNAL_BOT_TOKEN")
-SIGNAL_TG_CHAT  = os.environ.get("SIGNAL_TG_CHAT",  "YOUR_SIGNAL_CHAT_ID")
+SIGNAL_TG_TOKEN = os.environ.get("SIGNAL_TG_TOKEN", "8846280533:AAEkS0AMadIzTMcL7Gp6G7CHJHEStOAiQ8U")
+SIGNAL_TG_CHAT  = os.environ.get("SIGNAL_TG_CHAT",  "670433968")
 
 # ── Legacy single-bot fallback (leave blank if using the two above) ─
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
