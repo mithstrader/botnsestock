@@ -15,6 +15,8 @@ Strategy    : ORB + VWAP + EMA9/21 + SuperTrend + RSI + CPR + PDH/PDL + Fib + VI
 R:R         : 1:3
 """
 
+import os, platform   # needed before config block below
+
 # ═══════════════════════════════════════════════════════════════
 #  ⚙️  FILL THESE IN — that's all you need to change
 # ═══════════════════════════════════════════════════════════════
@@ -76,7 +78,7 @@ LATE_SESSION = (14, 30)
 #  IMPORTS
 # ═══════════════════════════════════════════════════════════════
 
-import os, sys, time, platform, subprocess, threading
+import sys, time, subprocess, threading
 from datetime import datetime, timedelta
 from typing import Optional
 
