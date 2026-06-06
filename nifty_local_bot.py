@@ -560,7 +560,11 @@ def analyze(name, cfg):
 #  NOTIFICATIONS
 # ═══════════════════════════════════════════════════════════════
 
+TELEGRAM_ENABLED = True   # set to False at runtime if user skips Telegram
+
 def send_telegram(msg: str):
+    if not TELEGRAM_ENABLED:
+        return
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "YOUR_BOT_TOKEN_HERE":
         print(f"[TG - not configured] {msg[:80]}")
         return
@@ -914,6 +918,19 @@ def main():
         print("   Open nifty_local_bot.py and fill in TELEGRAM_TOKEN and CHAT_ID\n")
 
     _init_excel()
+
+    # ── Ask whether to use Telegram ──────────────────────────
+    global TELEGRAM_ENABLED
+    try:
+        ans = input("Enable Telegram notifications? (y/n) [y]: ").strip().lower()
+        TELEGRAM_ENABLED = (ans != 'n')
+    except (EOFError, OSError):
+        TELEGRAM_ENABLED = True   # non-interactive (systemd/cloud) → always on
+    if TELEGRAM_ENABLED:
+        print("  ✅ Telegram ON")
+    else:
+        print("  🔕 Telegram OFF — running silently")
+
     startup_ping()
 
     # Schedule recurring scans; EOD detection is done inside the while loop
