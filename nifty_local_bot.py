@@ -21,10 +21,17 @@ import os, platform   # needed before config block below
 #  ⚙️  FILL THESE IN — that's all you need to change
 # ═══════════════════════════════════════════════════════════════
 
-# TELEGRAM_TOKEN = "YOUR_BOT_TOKEN_HERE"       # e.g. "7xxxxxxxxx:AAF..."
-# CHAT_ID        = "YOUR_CHAT_ID_HERE"          # e.g. "123456789"
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8794792642:AAE4r1BEYAyytGl_IXfZ8XwkebW7omTomGs")
-CHAT_ID        = os.environ.get("CHAT_ID",        "670433968")
+# ── Bot 1 : Every scan summary (score bars, RSI, LTP every 5 min) ──
+SCAN_TG_TOKEN  = os.environ.get("SCAN_TG_TOKEN",  "YOUR_SCAN_BOT_TOKEN")   # @BotFather → /newbot
+SCAN_TG_CHAT   = os.environ.get("SCAN_TG_CHAT",   "YOUR_SCAN_CHAT_ID")
+
+# ── Bot 2 : Confirmed signals only (score ≥75, startup, EOD) ───────
+SIGNAL_TG_TOKEN = os.environ.get("SIGNAL_TG_TOKEN", "YOUR_SIGNAL_BOT_TOKEN")
+SIGNAL_TG_CHAT  = os.environ.get("SIGNAL_TG_CHAT",  "YOUR_SIGNAL_CHAT_ID")
+
+# ── Legacy single-bot fallback (leave blank if using the two above) ─
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+CHAT_ID        = os.environ.get("CHAT_ID",        "")
 
 # ── Supabase (cloud backend) ──────────────────────────────────
 # Get these from: Supabase → Project Settings → API
@@ -562,22 +569,46 @@ def analyze(name, cfg):
 
 TELEGRAM_ENABLED = True   # set to False at runtime if user skips Telegram
 
-def send_telegram(msg: str):
+_PLACEHOLDER = {"YOUR_SCAN_BOT_TOKEN", "YOUR_SIGNAL_BOT_TOKEN",
+                "YOUR_BOT_TOKEN_HERE", "", None}
+
+def _tg_post(token, chat_id, msg):
+    """Raw Telegram send. Returns True on success."""
     if not TELEGRAM_ENABLED:
-        return
-    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        print(f"[TG - not configured] {msg[:80]}")
-        return
+        return False
+    if token in _PLACEHOLDER or not chat_id or chat_id in _PLACEHOLDER:
+        return False
     try:
         r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg,
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data={"chat_id": chat_id, "text": msg,
                   "parse_mode": "Markdown", "disable_web_page_preview": True},
             timeout=10)
         if r.status_code != 200:
-            print(f"[TG] Error {r.status_code}: {r.text[:100]}")
+            print(f"  [TG] Error {r.status_code}: {r.text[:120]}")
+            return False
+        return True
     except Exception as e:
-        print(f"[TG] {e}")
+        print(f"  [TG] {e}")
+        return False
+
+def send_scan_tg(msg: str):
+    """Send to Bot 1 (scan summaries). Falls back to signal bot or legacy."""
+    sent = _tg_post(SCAN_TG_TOKEN, SCAN_TG_CHAT, msg)
+    if not sent:
+        _tg_post(SIGNAL_TG_TOKEN, SIGNAL_TG_CHAT, msg) or \
+        _tg_post(TELEGRAM_TOKEN, CHAT_ID, msg)
+
+def send_signal_tg(msg: str):
+    """Send to Bot 2 (confirmed signals, startup, EOD). Falls back to scan bot or legacy."""
+    sent = _tg_post(SIGNAL_TG_TOKEN, SIGNAL_TG_CHAT, msg)
+    if not sent:
+        _tg_post(SCAN_TG_TOKEN, SCAN_TG_CHAT, msg) or \
+        _tg_post(TELEGRAM_TOKEN, CHAT_ID, msg)
+
+# Backward-compat alias used by any leftover direct calls
+def send_telegram(msg: str):
+    send_signal_tg(msg)
 
 def _beep():
     try:
@@ -616,12 +647,16 @@ def send_desktop(title, msg, urgent=False):
 
 def startup_ping():
     now_str = datetime.now(IST).strftime("%d %b %Y %H:%M IST")
-    send_telegram(
+    send_signal_tg(
         f"🚀 *Nifty Precision Bot — Started*\n"
         f"⏰ {now_str}\n"
         f"🎯 Scanning: {', '.join(INSTRUMENTS)}\n"
-        f"🔔 Alert threshold: score ≥ {SCORE_STRONG}\n"
+        f"🔔 Signal threshold: score ≥ {SCORE_STRONG}\n"
         f"⏱ Every {SCAN_INTERVAL} min | 9:35 AM – 3:30 PM IST"
+    )
+    send_scan_tg(
+        f"📡 *Scan bot active* | {now_str}\n"
+        f"Every {SCAN_INTERVAL}-min scan summaries will appear here."
     )
     sb_update_status("running")
 
@@ -629,13 +664,11 @@ def heartbeat_ping():
     now_str = datetime.now(IST).strftime("%H:%M IST")
     recent  = state["scores_seen"][-6:]
     avg_sc  = round(sum(recent)/len(recent)) if recent else 0
-    send_telegram(
-        f"💓 *Nifty Precision Bot — Alive*\n"
-        f"⏰ {now_str}\n"
+    send_scan_tg(
+        f"💓 *Bot alive* | {now_str}\n"
         f"🔍 Scans: {state['scan_count']}  |  Alerts: {state['alerts_sent']}\n"
         f"📊 Avg score (recent): {avg_sc}/100\n"
-        f"📈 VIX: {state['vix'] or '—'}  |  PCR: {state['pcr'] or '—'}\n"
-        f"_No signal yet — watching…_"
+        f"📈 VIX: {state['vix'] or '—'}  |  PCR: {state['pcr'] or '—'}"
     )
 
 def _data_error(name, reason):
@@ -643,7 +676,7 @@ def _data_error(name, reason):
     state["data_errors"][name] = cnt
     print(f"  [{name}] data error #{cnt}: {reason}")
     if cnt == 1 or cnt % 6 == 0:
-        send_telegram(f"⚠️ *Data issue — {name}*\n{reason}\nAttempt #{cnt}")
+        send_scan_tg(f"⚠️ *Data issue — {name}*\n{reason}\nAttempt #{cnt}")
 
 # ═══════════════════════════════════════════════════════════════
 #  EXCEL LOGGING
@@ -771,7 +804,7 @@ def send_scan_summary(scan_no, time_str, results):
     pcr_s = f"{state['pcr']:.2f}" if state["pcr"] else "—"
     alerted_any = any(r[4] for r in results)
     hdr = f"🔍 *Scan #{scan_no}* | {time_str} | {'🚨 Signal!' if alerted_any else 'No signal'}"
-    send_telegram(
+    send_scan_tg(
         f"{hdr}\n\n" + "\n".join(lines) +
         f"\n\n📈 VIX `{vix_s}` | PCR `{pcr_s}` | Alerts today: {state['alerts_sent']}"
     )
@@ -813,7 +846,7 @@ def scan():
     if state["vix"] and state["vix"] > VIX_EXTREME:
         msg = f"⛔ VIX={state['vix']:.1f} EXTREME — signals blocked"
         print(f"  [BLOCK] {msg}")
-        send_telegram(f"🔍 *Scan #{state['scan_count']}* | {now_str}\n\n{msg}")
+        send_scan_tg(f"🔍 *Scan #{state['scan_count']}* | {now_str}\n\n{msg}")
         return
 
     results = []
@@ -840,7 +873,7 @@ def scan():
                             last["direction"] == sig["direction"] and
                             sig["score"] < last["score"] + 10)
                 if not suppress:
-                    send_telegram(format_signal(sig))
+                    send_signal_tg(format_signal(sig))
                     log_excel(sig)
                     sb_push_signal(sig)
                     send_desktop(f"{name} {sig['direction']} {sig['rating']}",
@@ -866,13 +899,15 @@ def scan():
 
 def eod_summary():
     now_str = datetime.now(IST).strftime("%d %b %Y")
-    send_telegram(
+    eod_msg = (
         f"📊 *Nifty Precision Bot — EOD {now_str}*\n\n"
         f"🔍 Scans      : {state['scan_count']}\n"
         f"📢 Signals    : {state['alerts_sent']}\n"
         f"📈 VIX (last) : {state['vix']}\n"
         f"📊 PCR (last) : {state['pcr']}\n"
     )
+    send_signal_tg(eod_msg)
+    send_scan_tg(eod_msg)
     send_desktop("Market Closed", f"Scans: {state['scan_count']} | Alerts: {state['alerts_sent']}")
     print(f"\n{'='*55}\nEOD | Scans: {state['scan_count']} | Alerts: {state['alerts_sent']}\n{'='*55}")
     sb_update_status("sleeping")
@@ -913,9 +948,15 @@ def main():
     print(f"  Alert score : ≥{SCORE_STRONG} (Strong) | ≥{SCORE_ULTRA} (Ultra)")
     print("=" * 55)
 
-    if TELEGRAM_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        print("\n⚠  TELEGRAM NOT CONFIGURED")
-        print("   Open nifty_local_bot.py and fill in TELEGRAM_TOKEN and CHAT_ID\n")
+    # Show which bots are configured
+    scan_ok   = SCAN_TG_TOKEN   not in _PLACEHOLDER
+    signal_ok = SIGNAL_TG_TOKEN not in _PLACEHOLDER
+    legacy_ok = TELEGRAM_TOKEN  not in _PLACEHOLDER
+    print(f"  Bot 1 (scan summaries) : {'✅ configured' if scan_ok   else '⚠  not set'}")
+    print(f"  Bot 2 (signals/alerts) : {'✅ configured' if signal_ok else '⚠  not set'}")
+    if legacy_ok and not (scan_ok or signal_ok):
+        print(f"  Legacy single bot      : ✅ configured (used for both)")
+    print()
 
     _init_excel()
 
@@ -975,7 +1016,8 @@ def main():
                 )
                 print(f"\n💤  Sleeping until {nxt.strftime('%a %d %b %H:%M IST')} "
                       f"({hrs}h {mins}m away)")
-                send_telegram(sleep_msg)
+                send_signal_tg(sleep_msg)
+                send_scan_tg(f"💤 *Scan bot sleeping*\nNext: {nxt.strftime('%a %d %b, %H:%M IST')}")
                 send_desktop("Market Closed",
                              f"Next: {nxt.strftime('%a %d %b %H:%M')} | "
                              f"{hrs}h {mins}m")
