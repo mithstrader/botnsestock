@@ -3,106 +3,373 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Nifty Precision Bot — Live Dashboard</title>
+<title>NSE Stock Bot — Live Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
+/* ── Reset ─────────────────────────────────────────────────────── */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+/* ── Design tokens ─────────────────────────────────────────────── */
 :root{
-  --bg:#0d1117;--surface:#161b22;--surface2:#1c2330;--border:#30363d;
-  --text:#e6edf3;--muted:#8b949e;
-  --call:#3fb950;--put:#f85149;--ultra:#d2a8ff;--medium:#e3b341;--weak:#8b949e;
-  --accent:#58a6ff;--radius:8px;
+  --bg:      #070d18;
+  --bg2:     #0a1422;
+  --surface: #0e1c30;
+  --surf2:   #122338;
+  --surf3:   #172c48;
+  --border:  rgba(100,160,255,.08);
+  --bord2:   rgba(100,160,255,.16);
+  --text:    #cfe0f5;
+  --text2:   #e8f2ff;
+  --muted:   #4d6a8a;
+  --muted2:  #7a9cbd;
+  --call:    #10b981;
+  --calld:   rgba(16,185,129,.1);
+  --callb:   rgba(16,185,129,.3);
+  --put:     #f43f5e;
+  --putd:    rgba(244,63,94,.1);
+  --putb:    rgba(244,63,94,.3);
+  --spike:   #f97316;
+  --spiked:  rgba(249,115,22,.12);
+  --spikeb:  rgba(249,115,22,.35);
+  --gold:    #f59e0b;
+  --goldd:   rgba(245,158,11,.1);
+  --ultra:   #a78bfa;
+  --ultrad:  rgba(167,139,250,.1);
+  --ultrab:  rgba(167,139,250,.3);
+  --accent:  #3b82f6;
+  --accd:    rgba(59,130,246,.1);
+  --radius:  10px;
+  --radius2: 16px;
+  --shadow:  0 4px 24px rgba(0,0,0,.5);
+  --shadow2: 0 8px 48px rgba(0,0,0,.7);
 }
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);min-height:100vh;font-size:14px}
-/* Header */
-header{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100;gap:10px;flex-wrap:wrap}
-.brand{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:700}
-.header-right{display:flex;align-items:center;gap:14px;font-size:12px;color:var(--muted)}
-.sbadge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;border:1px solid}
-.sbadge.running{color:var(--call);border-color:rgba(63,185,80,.4);background:rgba(63,185,80,.08)}
-.sbadge.sleeping{color:var(--medium);border-color:rgba(227,179,65,.4);background:rgba(227,179,65,.08)}
-.sbadge.stopped,.sbadge.connecting{color:var(--muted);border-color:var(--border);background:var(--surface2)}
-.dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+
+/* ── Base ──────────────────────────────────────────────────────── */
+html{scroll-behavior:smooth}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Inter",sans-serif;
+  background:var(--bg);color:var(--text);min-height:100vh;
+  font-size:13.5px;line-height:1.5;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────────── */
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:var(--bg2)}
+::-webkit-scrollbar-thumb{background:var(--surf3);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+
+/* ── Background mesh ───────────────────────────────────────────── */
+body::before{
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(ellipse 80% 40% at 20% 0%,rgba(59,130,246,.06) 0%,transparent 70%),
+    radial-gradient(ellipse 50% 30% at 80% 100%,rgba(16,185,129,.04) 0%,transparent 60%);
+}
+main,header,.tabs{position:relative;z-index:1}
+
+/* ── Header ────────────────────────────────────────────────────── */
+header{
+  display:flex;align-items:center;gap:14px;padding:13px 24px;
+  background:rgba(7,13,24,.85);backdrop-filter:blur(20px);
+  border-bottom:1px solid var(--border);position:sticky;top:0;z-index:200;
+  flex-wrap:wrap;
+}
+.brand{display:flex;align-items:center;gap:9px;font-size:16px;font-weight:800;
+  background:linear-gradient(135deg,var(--text2),var(--accent));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:-.2px}
+.brand-icon{font-size:20px;-webkit-text-fill-color:initial}
+
+.hpills{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto}
+
+/* Status badge */
+.sbadge{
+  display:inline-flex;align-items:center;gap:6px;padding:4px 11px;
+  border-radius:20px;font-size:11px;font-weight:700;border:1px solid transparent;
+  letter-spacing:.2px;transition:.3s;white-space:nowrap
+}
+.sbadge.running {color:var(--call);border-color:var(--callb);background:var(--calld)}
+.sbadge.sleeping{color:var(--gold);border-color:rgba(245,158,11,.3);background:var(--goldd)}
+.sbadge.stopped,.sbadge.connecting{color:var(--muted2);border-color:var(--border);background:rgba(255,255,255,.03)}
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0}
 .running .dot{animation:pulse 2s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-/* Tabs */
-.tabs{display:flex;padding:0 24px;border-bottom:1px solid var(--border);background:var(--surface);overflow-x:auto;gap:2px}
-.tbtn{padding:12px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);cursor:pointer;font-size:13px;font-weight:500;white-space:nowrap;transition:.15s}
+
+/* Market status */
+.mkt-pill{
+  display:inline-flex;align-items:center;gap:5px;padding:3px 10px;
+  border-radius:20px;font-size:11px;font-weight:600;letter-spacing:.2px;
+}
+.mkt-pill.open {background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);color:var(--call)}
+.mkt-pill.closed{background:rgba(255,255,255,.04);border:1px solid var(--border);color:var(--muted2)}
+
+/* VIX / PCR pills */
+.vpill{
+  display:inline-flex;align-items:center;gap:5px;padding:3px 10px;
+  border-radius:8px;background:var(--surf2);border:1px solid var(--border);
+  font-size:11px;font-weight:600;color:var(--muted2);white-space:nowrap
+}
+.vpill span{color:var(--text2)}
+.lupd{font-size:11px;color:var(--muted);white-space:nowrap}
+
+/* ── Tabs ──────────────────────────────────────────────────────── */
+.tabs{
+  display:flex;padding:0 20px;background:rgba(7,13,24,.9);
+  border-bottom:1px solid var(--border);overflow-x:auto;gap:0;
+  position:sticky;top:51px;z-index:150;backdrop-filter:blur(20px);
+}
+.tbtn{
+  padding:12px 18px;background:none;border:none;
+  border-bottom:2px solid transparent;color:var(--muted2);
+  cursor:pointer;font-size:12.5px;font-weight:600;white-space:nowrap;
+  transition:.2s;letter-spacing:.1px;
+}
 .tbtn:hover{color:var(--text)}
 .tbtn.active{color:var(--accent);border-bottom-color:var(--accent)}
-/* Layout */
-main{padding:20px 24px;max-width:1400px;margin:0 auto}
+
+/* ── Layout ────────────────────────────────────────────────────── */
+main{padding:22px 24px;max-width:1500px;margin:0 auto}
 .panel{display:none}.panel.active{display:block}
-/* Setup banner */
-.setup{background:rgba(88,166,255,.07);border:1px solid rgba(88,166,255,.3);border-radius:var(--radius);padding:18px 22px;margin-bottom:20px;display:none}
-.setup h3{color:var(--accent);margin-bottom:6px}
-.setup code{background:var(--surface2);padding:2px 6px;border-radius:4px;font-size:12px}
-/* Stats row */
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:20px}
-.sc{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;text-align:center}
-.sc-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
-.sc-val{font-size:22px;font-weight:700}
-/* Instrument cards */
-.igrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px;margin-bottom:24px}
-.icard{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px;transition:.2s}
-.icard.c{border-color:rgba(63,185,80,.4)}.icard.p{border-color:rgba(248,81,73,.4)}
-.ih{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
-.iname{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.5px}
-.dbadge{padding:3px 10px;border-radius:12px;font-size:11px;font-weight:700}
-.dbadge.c{background:rgba(63,185,80,.12);color:var(--call);border:1px solid rgba(63,185,80,.3)}
-.dbadge.p{background:rgba(248,81,73,.12);color:var(--put); border:1px solid rgba(248,81,73,.3)}
-.bwrap{background:var(--surface2);border-radius:4px;height:8px;margin-bottom:8px;overflow:hidden}
-.bfill{height:100%;border-radius:4px;transition:width .5s ease}
-.srow{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}
-.snum{font-size:28px;font-weight:800}.snum.c{color:var(--call)}.snum.p{color:var(--put)}
-.rbadge{font-size:10px;padding:2px 8px;border-radius:10px;border:1px solid transparent}
-.imeta{display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:12px;color:var(--muted)}
-.imeta b{color:var(--text)}
-/* Signal cards */
-.stitle{font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px}
-.sgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px;margin-bottom:24px}
-.scard{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--border);border-radius:var(--radius);padding:14px 16px}
-.scard.c{border-left-color:var(--call)}.scard.p{border-left-color:var(--put)}.scard.u{border-left-color:var(--ultra)}
-.sch{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-.scinstr{font-weight:700;font-size:13px}.sctime{font-size:11px;color:var(--muted)}
-.scb{display:grid;grid-template-columns:1fr 1fr;gap:3px;font-size:12px}
-.scb .l{color:var(--muted)}.scb .v{font-weight:600}
-/* Filters */
-.frow{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px;align-items:center}
-.frow select,.frow input{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);padding:7px 12px;font-size:13px;outline:none}
-.frow select:focus,.frow input:focus{border-color:var(--accent)}
-.btn{padding:7px 16px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface2);color:var(--text);cursor:pointer;font-size:13px}
-.btn:hover{border-color:var(--accent);color:var(--accent)}
-.btn.pri{background:var(--accent);border-color:var(--accent);color:#0d1117;font-weight:600}.btn.pri:hover{opacity:.9}
-/* Table */
+
+/* ── Setup banner ──────────────────────────────────────────────── */
+.setup{
+  background:rgba(59,130,246,.07);border:1px solid rgba(59,130,246,.25);
+  border-radius:var(--radius2);padding:18px 22px;margin-bottom:22px;display:none;
+}
+.setup h3{color:var(--accent);margin-bottom:6px;font-size:14px}
+.setup code{background:var(--surf2);padding:2px 7px;border-radius:4px;font-size:12px;color:var(--text2)}
+
+/* ── Stat cards row ────────────────────────────────────────────── */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin-bottom:20px}
+.sc{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:14px 16px;text-align:center;transition:.2s;position:relative;overflow:hidden;
+}
+.sc::before{
+  content:'';position:absolute;inset:0;border-radius:inherit;
+  background:linear-gradient(135deg,rgba(255,255,255,.02),transparent);
+  pointer-events:none;
+}
+.sc:hover{border-color:var(--bord2);transform:translateY(-1px)}
+.sc-lbl{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px;font-weight:600}
+.sc-val{font-size:22px;font-weight:800;color:var(--text2);line-height:1.1}
+
+/* ── Score helpers ──────────────────────────────────────────────── */
+/* Returns color based on score 0-100 */
+/* Applied via JS */
+
+/* ── Index instrument cards ─────────────────────────────────────── */
+.igrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-bottom:26px}
+.icard{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius2);
+  padding:20px;transition:.25s;position:relative;overflow:hidden;
+}
+.icard.c{border-color:var(--callb);box-shadow:0 0 0 1px rgba(16,185,129,.08)}
+.icard.p{border-color:var(--putb); box-shadow:0 0 0 1px rgba(244,63,94,.08)}
+.icard::after{
+  content:'';position:absolute;top:0;left:0;right:0;height:2px;border-radius:var(--radius2) var(--radius2) 0 0;
+}
+.icard.c::after{background:linear-gradient(90deg,var(--call),rgba(16,185,129,.3))}
+.icard.p::after{background:linear-gradient(90deg,var(--put),rgba(244,63,94,.3))}
+.ih{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.iname{font-size:11.5px;font-weight:800;color:var(--muted2);letter-spacing:.6px;text-transform:uppercase}
+.iscore-wrap{display:flex;align-items:baseline;gap:4px;margin-bottom:10px}
+.iscore-num{font-size:36px;font-weight:900;line-height:1}
+.iscore-den{font-size:14px;color:var(--muted);font-weight:500}
+.score-bar-wrap{background:rgba(255,255,255,.05);border-radius:4px;height:5px;overflow:hidden;margin-bottom:12px}
+.score-bar-fill{height:100%;border-radius:4px;transition:width .6s cubic-bezier(.4,0,.2,1)}
+.irbar{font-size:10px;font-weight:700;padding:2px 9px;border-radius:8px;border:1px solid transparent}
+.imeta{display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px;color:var(--muted2);margin-top:10px}
+.imeta .v{color:var(--text2);font-weight:600}
+
+/* ── Direction badge ────────────────────────────────────────────── */
+.dbadge{
+  display:inline-flex;align-items:center;gap:4px;padding:3px 9px;
+  border-radius:6px;font-size:11px;font-weight:700;letter-spacing:.2px;
+}
+.dbadge.c{background:var(--calld);color:var(--call);border:1px solid var(--callb)}
+.dbadge.p{background:var(--putd);color:var(--put);border:1px solid var(--putb)}
+
+/* ── Signal type badge ──────────────────────────────────────────── */
+.stbadge{
+  display:inline-flex;align-items:center;gap:3px;padding:2px 8px;
+  border-radius:5px;font-size:10px;font-weight:700;letter-spacing:.2px;white-space:nowrap;
+}
+.stbadge.normal {background:var(--surf3);color:var(--muted2);border:1px solid var(--border)}
+.stbadge.spike  {background:var(--spiked);color:var(--spike);border:1px solid var(--spikeb)}
+.stbadge.reversal{background:var(--ultrad);color:var(--ultra);border:1px solid var(--ultrab)}
+
+/* ── Buildup badge ──────────────────────────────────────────────── */
+.bubadge{
+  display:inline-flex;align-items:center;padding:2px 7px;
+  border-radius:5px;font-size:10px;font-weight:600;white-space:nowrap;
+}
+.bu-lb{background:rgba(16,185,129,.1);color:#34d399;border:1px solid rgba(52,211,153,.25)}
+.bu-sb{background:rgba(244,63,94,.1);color:#fb7185;border:1px solid rgba(251,113,133,.25)}
+.bu-sc{background:rgba(249,115,22,.1);color:#fb923c;border:1px solid rgba(251,146,60,.25)}
+.bu-lu{background:rgba(167,139,250,.1);color:#c4b5fd;border:1px solid rgba(196,181,253,.25)}
+.bu-xx{background:var(--surf3);color:var(--muted2);border:1px solid var(--border)}
+
+/* ── Session badge ──────────────────────────────────────────────── */
+.sessbadge{
+  padding:2px 8px;border-radius:5px;font-size:10px;font-weight:600;
+  background:var(--surf2);color:var(--muted2);border:1px solid var(--border);
+}
+
+/* ── Stock signal cards ─────────────────────────────────────────── */
+.sec-label{
+  font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.7px;margin-bottom:14px;display:flex;align-items:center;gap:8px;
+}
+.sec-label::after{content:'';flex:1;height:1px;background:var(--border)}
+
+.sgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin-bottom:26px}
+
+.scard{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius2);
+  padding:16px 18px;transition:.2s;position:relative;overflow:hidden;
+}
+.scard::before{
+  content:'';position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:var(--radius2) 0 0 var(--radius2);
+}
+.scard.c::before{background:linear-gradient(180deg,var(--call),rgba(16,185,129,.4))}
+.scard.p::before{background:linear-gradient(180deg,var(--put),rgba(244,63,94,.4))}
+.scard.spike-card{border-color:var(--spikeb);box-shadow:0 0 12px rgba(249,115,22,.08)}
+.scard:hover{border-color:var(--bord2);transform:translateY(-2px);box-shadow:var(--shadow)}
+
+/* Card header */
+.sch{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;gap:8px}
+.scinstr{display:flex;flex-direction:column;gap:5px}
+.sc-sym{font-size:17px;font-weight:900;color:var(--text2);letter-spacing:-.3px}
+.sc-badges{display:flex;gap:4px;flex-wrap:wrap;align-items:center}
+.sctime{font-size:11px;color:var(--muted);white-space:nowrap}
+
+/* Card score bar */
+.sc-score-row{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.sc-score-track{flex:1;height:6px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden}
+.sc-score-fill{height:100%;border-radius:3px;transition:width .5s ease}
+.sc-score-num{font-size:15px;font-weight:800;min-width:26px;text-align:right}
+
+/* Card data grid */
+.scdata{display:grid;grid-template-columns:1fr 1fr;gap:5px 10px;font-size:12px;margin-bottom:12px}
+.scdata .l{color:var(--muted);font-weight:500}
+.scdata .v{font-weight:700;color:var(--text2)}
+
+/* DOM imbalance bar */
+.dom-label{font-size:10.5px;color:var(--muted);font-weight:500;margin-bottom:5px}
+.dom-track{
+  display:flex;height:6px;background:rgba(255,255,255,.05);border-radius:3px;
+  overflow:hidden;position:relative;
+}
+.dom-half{width:50%;display:flex;overflow:hidden}
+.dom-half.left{justify-content:flex-end}
+.dom-neg{background:var(--put);height:6px;border-radius:3px 0 0 3px;transition:width .5s ease}
+.dom-pos{background:var(--call);height:6px;border-radius:0 3px 3px 0;transition:width .5s ease}
+.dom-center-mark{
+  position:absolute;left:50%;transform:translateX(-50%);top:0;bottom:0;
+  width:1px;background:rgba(255,255,255,.2);pointer-events:none;
+}
+.dom-pct{font-size:10px;font-weight:700;margin-top:3px}
+
+/* SL → Target row */
+.sl-tgt{
+  display:flex;align-items:center;gap:6px;margin-top:10px;padding:8px 10px;
+  background:rgba(255,255,255,.03);border-radius:7px;border:1px solid var(--border);
+}
+.sl-tgt-sl{color:var(--put);font-weight:700;font-size:12px}
+.sl-tgt-arrow{color:var(--muted);font-size:11px}
+.sl-tgt-tgt{color:var(--call);font-weight:700;font-size:12px}
+.sl-tgt-lbl{font-size:10px;color:var(--muted)}
+
+/* ── Filters ────────────────────────────────────────────────────── */
+.frow{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;align-items:center}
+.frow select,.frow input[type=date]{
+  background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  color:var(--text);padding:7px 12px;font-size:12.5px;outline:none;transition:.2s;
+}
+.frow select:focus,.frow input:focus{border-color:var(--bord2)}
+.btn{
+  padding:7px 16px;border-radius:8px;border:1px solid var(--border);
+  background:var(--surf2);color:var(--text);cursor:pointer;font-size:12.5px;
+  font-weight:600;transition:.2s;
+}
+.btn:hover{border-color:var(--bord2);color:var(--text2)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
+.btn.pri:hover{opacity:.85}
+.info-txt{font-size:11.5px;color:var(--muted)}
+
+/* ── Table ──────────────────────────────────────────────────────── */
 .twrap{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px}
-table{width:100%;border-collapse:collapse;font-size:13px}
-thead th{background:var(--surface2);color:var(--muted);padding:10px 12px;text-align:left;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;border-bottom:1px solid var(--border)}
-tbody tr{border-bottom:1px solid var(--border)}.tbody tr:last-child{border-bottom:none}
-tbody tr:hover{background:var(--surface2)}
-td{padding:9px 12px;white-space:nowrap;vertical-align:middle}
-.mini{display:flex;align-items:center;gap:5px}
-.mbar{width:38px;height:5px;background:var(--surface2);border-radius:3px;overflow:hidden}
-.mfill{height:100%;border-radius:3px}
-/* Analytics */
-.agrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:18px;margin-top:20px}
-.ccard{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px}
-.ctitle{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:14px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+thead th{
+  background:var(--surf2);color:var(--muted);padding:10px 14px;text-align:left;
+  font-weight:700;font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;
+  white-space:nowrap;border-bottom:1px solid var(--border);
+}
+tbody tr{border-bottom:1px solid rgba(255,255,255,.04);transition:.15s}
+tbody tr:last-child{border-bottom:none}
+tbody tr:hover{background:rgba(255,255,255,.025)}
+td{padding:10px 14px;white-space:nowrap;vertical-align:middle}
+.td-sym{font-weight:800;font-size:13px;color:var(--text2)}
+
+/* Score mini bar in table */
+.mini-score{display:flex;align-items:center;gap:6px}
+.mini-bar{width:40px;height:5px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden}
+.mini-fill{height:100%;border-radius:3px}
+.mini-num{font-weight:800;font-size:12px}
+
+/* ── Analytics ──────────────────────────────────────────────────── */
+.agrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;margin-top:20px}
+.ccard{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius2);padding:20px}
+.ctitle{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:16px}
 .ccard canvas{max-height:220px}
-/* Scan score cell */
-.sscore{display:inline-flex;align-items:center;gap:4px;font-size:12px}
-.sscore .b{width:34px;height:5px;background:var(--surface2);border-radius:3px;overflow:hidden}
-.sscore .f{height:100%;border-radius:3px}
-/* Misc */
-.empty,.load{text-align:center;padding:36px;color:var(--muted)}
-.info{color:var(--muted);font-size:12px}
-/* Toast */
-#toasts{position:fixed;top:68px;right:18px;z-index:999;display:flex;flex-direction:column;gap:8px;pointer-events:none}
-.toast{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;font-size:13px;max-width:300px;box-shadow:0 4px 20px rgba(0,0,0,.5);pointer-events:all;animation:tin .3s ease}
-.toast.c{border-left:3px solid var(--call)}.toast.p{border-left:3px solid var(--put)}
+
+/* ── Toast ──────────────────────────────────────────────────────── */
+#toasts{position:fixed;top:110px;right:18px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none;max-width:320px}
+.toast{
+  background:var(--surf2);border:1px solid var(--border);border-radius:var(--radius);
+  padding:13px 15px;font-size:12.5px;box-shadow:var(--shadow2);pointer-events:all;
+  animation:tin .3s cubic-bezier(.4,0,.2,1);line-height:1.5;
+}
+.toast.c{border-left:3px solid var(--call)}
+.toast.p{border-left:3px solid var(--put)}
+.toast.s{border-left:3px solid var(--spike)}
 @keyframes tin{from{transform:translateX(120%);opacity:0}to{transform:translateX(0);opacity:1}}
-@media(max-width:600px){header,main{padding:10px 14px}.tabs{padding:0 10px}.tbtn{padding:10px 12px}}
+
+/* ── Empty & loading ────────────────────────────────────────────── */
+.empty{text-align:center;padding:48px 24px;color:var(--muted)}
+.empty-icon{font-size:36px;margin-bottom:10px}
+.empty-text{font-size:13px;color:var(--muted2)}
+.load{text-align:center;padding:36px;color:var(--muted);font-size:13px}
+
+/* ── Pagination ─────────────────────────────────────────────────── */
+.pgrow{display:flex;justify-content:center;align-items:center;gap:12px;margin-bottom:28px}
+
+/* ── Scan log row score ──────────────────────────────────────────── */
+.scell{display:inline-flex;align-items:center;gap:5px;font-size:11.5px}
+.scell-b{width:30px;height:4px;background:rgba(255,255,255,.07);border-radius:2px;overflow:hidden}
+.scell-f{height:100%;border-radius:2px}
+
+/* ── Activity bar ───────────────────────────────────────────────── */
+.act-bar{display:inline-flex;align-items:center;gap:6px;font-size:12px}
+.act-track{width:50px;height:5px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden}
+.act-fill{height:100%;border-radius:3px;transition:width .4s ease}
+
+/* ── Animations ─────────────────────────────────────────────────── */
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.panel.active{animation:fadeIn .2s ease}
+
+/* ── Responsive ─────────────────────────────────────────────────── */
+@media(max-width:640px){
+  header,main{padding:12px 14px}
+  .tabs{padding:0 8px;top:48px}
+  .tbtn{padding:10px 12px;font-size:12px}
+  .stats{grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px}
+  .sgrid{grid-template-columns:1fr}
+  .igrid{grid-template-columns:1fr}
+  .hpills{display:none}
+  .sc-val{font-size:18px}
+}
 </style>
 </head>
 <body>
@@ -116,35 +383,41 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 <!-- ════════════════════════════════════════════════════════════════════════ -->
 
 <header>
-  <div class="brand"><span>🎯</span><span>Nifty Precision Bot</span></div>
-  <div class="header-right">
+  <div class="brand"><span class="brand-icon">🎯</span><span>NSE Stock Bot</span></div>
+
+  <div class="hpills">
+    <span id="mkt-pill" class="mkt-pill closed"><span class="dot" style="width:5px;height:5px;border-radius:50%;background:currentColor"></span><span id="mkt-txt">Market Closed</span></span>
     <span id="sbadge" class="sbadge connecting"><span class="dot"></span><span id="stxt">Connecting…</span></span>
-    <span id="lupd"></span>
+    <span class="vpill">VIX <span id="hd-vix">—</span></span>
+    <span class="vpill">PCR <span id="hd-pcr">—</span></span>
+    <span class="vpill">Scans <span id="hd-sc">—</span></span>
+    <span class="vpill">Signals <span id="hd-al">—</span></span>
+    <span class="lupd" id="lupd"></span>
   </div>
 </header>
 
 <div class="tabs">
   <button class="tbtn active" data-tab="live">📡 Live</button>
+  <button class="tbtn" data-tab="stocks">📈 Stocks</button>
   <button class="tbtn" data-tab="signals">📢 Signals</button>
   <button class="tbtn" data-tab="analytics">📊 Analytics</button>
   <button class="tbtn" data-tab="scanlog">🔍 Scan Log</button>
-  <button class="tbtn" data-tab="stocks">📈 Stocks</button>
 </div>
 
 <main>
 <div class="setup" id="setup">
   <h3>⚙️ Supabase not configured</h3>
-  <p style="color:var(--muted);margin-top:6px">
-    Open <code>index.html</code>, find the CONFIG block near the top &lt;script&gt; tag and replace<br>
+  <p style="color:var(--muted2);margin-top:6px">
+    Open <code>index.html</code>, find the CONFIG block and replace
     <code>SUPABASE_URL</code> and <code>SUPABASE_ANON_KEY</code> with your project values.<br>
     Get them from <b>Supabase → Project Settings → API</b>.
   </p>
 </div>
 
-<!-- ══════ LIVE ══════════════════════════════════════════════════ -->
+<!-- ══════ LIVE ════════════════════════════════════════════════════ -->
 <div id="p-live" class="panel active">
-  <div class="stats">
-    <div class="sc"><div class="sc-lbl">Today's Scans</div><div id="s0" class="sc-val">—</div></div>
+  <div class="stats" style="margin-bottom:22px">
+    <div class="sc"><div class="sc-lbl">Scans Today</div><div id="s0" class="sc-val">—</div></div>
     <div class="sc"><div class="sc-lbl">Signals Today</div><div id="s1" class="sc-val">—</div></div>
     <div class="sc"><div class="sc-lbl">India VIX</div>    <div id="s2" class="sc-val">—</div></div>
     <div class="sc"><div class="sc-lbl">PCR (Nifty)</div>  <div id="s3" class="sc-val">—</div></div>
@@ -153,45 +426,110 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
   <div class="igrid">
     <div class="icard" id="ic-NIFTY50">
-      <div class="ih"><span class="iname">NIFTY 50</span><span class="dbadge" id="id-NIFTY50">—</span></div>
-      <div class="bwrap"><div class="bfill" id="ib-NIFTY50" style="width:0%"></div></div>
-      <div class="srow">
-        <span class="snum" id="is-NIFTY50">—</span><span style="color:var(--muted)">/100</span>
-        <span class="rbadge" id="ir-NIFTY50"></span>
+      <div class="ih">
+        <span class="iname">NIFTY 50</span>
+        <span class="dbadge" id="id-NIFTY50">—</span>
+      </div>
+      <div class="score-bar-wrap"><div class="score-bar-fill" id="ib-NIFTY50" style="width:0%"></div></div>
+      <div class="iscore-wrap">
+        <span class="iscore-num" id="is-NIFTY50">—</span>
+        <span class="iscore-den">/100</span>
+        <span class="irbar" id="ir-NIFTY50" style="margin-left:8px"></span>
       </div>
       <div class="imeta">
-        <span>RSI: <b id="ii-NIFTY50-rsi">—</b></span>
-        <span>LTP: <b id="ii-NIFTY50-ltp">—</b></span>
+        <span>RSI <span class="v" id="ii-NIFTY50-rsi">—</span></span>
+        <span>LTP <span class="v" id="ii-NIFTY50-ltp">—</span></span>
       </div>
     </div>
     <div class="icard" id="ic-BANKNIFTY">
-      <div class="ih"><span class="iname">BANKNIFTY</span><span class="dbadge" id="id-BANKNIFTY">—</span></div>
-      <div class="bwrap"><div class="bfill" id="ib-BANKNIFTY" style="width:0%"></div></div>
-      <div class="srow">
-        <span class="snum" id="is-BANKNIFTY">—</span><span style="color:var(--muted)">/100</span>
-        <span class="rbadge" id="ir-BANKNIFTY"></span>
+      <div class="ih">
+        <span class="iname">BANKNIFTY</span>
+        <span class="dbadge" id="id-BANKNIFTY">—</span>
+      </div>
+      <div class="score-bar-wrap"><div class="score-bar-fill" id="ib-BANKNIFTY" style="width:0%"></div></div>
+      <div class="iscore-wrap">
+        <span class="iscore-num" id="is-BANKNIFTY">—</span>
+        <span class="iscore-den">/100</span>
+        <span class="irbar" id="ir-BANKNIFTY" style="margin-left:8px"></span>
       </div>
       <div class="imeta">
-        <span>RSI: <b id="ii-BANKNIFTY-rsi">—</b></span>
-        <span>LTP: <b id="ii-BANKNIFTY-ltp">—</b></span>
+        <span>RSI <span class="v" id="ii-BANKNIFTY-rsi">—</span></span>
+        <span>LTP <span class="v" id="ii-BANKNIFTY-ltp">—</span></span>
       </div>
     </div>
     <div class="icard" id="ic-SENSEX">
-      <div class="ih"><span class="iname">SENSEX</span><span class="dbadge" id="id-SENSEX">—</span></div>
-      <div class="bwrap"><div class="bfill" id="ib-SENSEX" style="width:0%"></div></div>
-      <div class="srow">
-        <span class="snum" id="is-SENSEX">—</span><span style="color:var(--muted)">/100</span>
-        <span class="rbadge" id="ir-SENSEX"></span>
+      <div class="ih">
+        <span class="iname">SENSEX</span>
+        <span class="dbadge" id="id-SENSEX">—</span>
+      </div>
+      <div class="score-bar-wrap"><div class="score-bar-fill" id="ib-SENSEX" style="width:0%"></div></div>
+      <div class="iscore-wrap">
+        <span class="iscore-num" id="is-SENSEX">—</span>
+        <span class="iscore-den">/100</span>
+        <span class="irbar" id="ir-SENSEX" style="margin-left:8px"></span>
       </div>
       <div class="imeta">
-        <span>RSI: <b id="ii-SENSEX-rsi">—</b></span>
-        <span>LTP: <b id="ii-SENSEX-ltp">—</b></span>
+        <span>RSI <span class="v" id="ii-SENSEX-rsi">—</span></span>
+        <span>LTP <span class="v" id="ii-SENSEX-ltp">—</span></span>
       </div>
     </div>
   </div>
 
-  <div class="stitle">Latest Signals Today</div>
+  <div class="sec-label">Latest Index Signals Today</div>
   <div id="lsigs"><div class="load">Loading…</div></div>
+</div>
+
+<!-- ══════ STOCKS ═════════════════════════════════════════════════ -->
+<div id="p-stocks" class="panel">
+  <div class="stats" style="margin-bottom:22px">
+    <div class="sc"><div class="sc-lbl">Stocks Scanned</div><div id="sk0" class="sc-val">—</div></div>
+    <div class="sc"><div class="sc-lbl">Signals Today</div><div id="sk1" class="sc-val">—</div></div>
+    <div class="sc"><div class="sc-lbl">Activity</div>       <div id="sk2" class="sc-val">—</div></div>
+    <div class="sc"><div class="sc-lbl">Session</div>        <div id="sk3" class="sc-val" style="font-size:13px;color:var(--muted2)">—</div></div>
+    <div class="sc"><div class="sc-lbl">Last Scan</div>      <div id="sk4" class="sc-val" style="font-size:14px">—</div></div>
+  </div>
+
+  <div class="sec-label">Today's Stock Signals</div>
+  <div id="sk-lsigs"><div class="load">Loading…</div></div>
+
+  <!-- All Signals Table -->
+  <div class="sec-label" style="margin-top:10px">All Signal History</div>
+  <div class="frow">
+    <select id="sk-fd"><option value="">All Directions</option><option>CALL</option><option>PUT</option></select>
+    <select id="sk-ft"><option value="">All Types</option><option value="NORMAL">Normal</option><option value="SPIKE">⚡ Spike</option><option value="REVERSAL">↩ Reversal</option></select>
+    <input type="date" id="sk-fdf" placeholder="From">
+    <input type="date" id="sk-fdt" placeholder="To">
+    <button class="btn pri" onclick="stockSigApply()">Apply</button>
+    <button class="btn" onclick="stockSigClear()">Clear</button>
+    <span id="sk-cnt" class="info-txt"></span>
+  </div>
+  <div class="twrap">
+    <table><thead><tr>
+      <th>Date</th><th>Time</th><th>Symbol</th><th>Direction</th><th>Type</th>
+      <th>Score</th><th>LTP (₹)</th><th>OI Chg</th><th>Vol Chg</th>
+      <th>DOM</th><th>Buildup</th><th>SL → Target</th><th>Session</th><th>VIX</th>
+    </tr></thead><tbody id="sk-tb"><tr><td colspan="14" class="load">Loading…</td></tr></tbody></table>
+  </div>
+  <div class="pgrow">
+    <button class="btn" id="sk-prev" onclick="stockGo(-1)">‹ Prev</button>
+    <span id="sk-pinfo" class="info-txt"></span>
+    <button class="btn" id="sk-next" onclick="stockGo(1)">Next ›</button>
+  </div>
+
+  <!-- Scan Log -->
+  <div class="sec-label">Stock Scan Log</div>
+  <div class="frow">
+    <input type="date" id="sk-sld">
+    <button class="btn pri" onclick="loadStockScans()">Filter</button>
+    <button class="btn" onclick="document.getElementById('sk-sld').value='';loadStockScans()">Today</button>
+    <span id="sk-slcnt" class="info-txt"></span>
+  </div>
+  <div class="twrap">
+    <table><thead><tr>
+      <th>#</th><th>Time</th><th>Stocks</th><th>Activity</th>
+      <th>Session</th><th>Top Pick</th><th>Score</th><th>Direction</th><th>Alerts</th><th>VIX</th><th>PCR</th>
+    </tr></thead><tbody id="sk-sltb"><tr><td colspan="11" class="load">Loading…</td></tr></tbody></table>
+  </div>
 </div>
 
 <!-- ══════ SIGNALS ════════════════════════════════════════════════ -->
@@ -200,21 +538,20 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
     <select id="fi"><option value="">All Instruments</option><option>NIFTY50</option><option>BANKNIFTY</option><option>SENSEX</option></select>
     <select id="fd"><option value="">All Directions</option><option>CALL</option><option>PUT</option></select>
     <select id="fr"><option value="">All Ratings</option><option value="ULTRA STRONG">Ultra Strong</option><option>STRONG</option><option>MEDIUM</option><option>WEAK</option></select>
-    <input type="date" id="fdf" placeholder="From"><input type="date" id="fdt" placeholder="To">
+    <input type="date" id="fdf"><input type="date" id="fdt">
     <button class="btn pri" onclick="sigApply()">Apply</button>
     <button class="btn" onclick="sigClear()">Clear</button>
-    <span id="sigcnt" class="info"></span>
+    <span id="sigcnt" class="info-txt"></span>
   </div>
   <div class="twrap">
     <table><thead><tr>
       <th>Date</th><th>Time</th><th>Instrument</th><th>Dir</th><th>Rating</th>
-      <th>Score</th><th>LTP</th><th>Strike</th><th>SL → Target</th>
-      <th>RSI</th><th>Fib</th><th>VIX</th><th>PCR</th>
+      <th>Score</th><th>LTP</th><th>Strike</th><th>SL → Target</th><th>RSI</th><th>Fib</th><th>VIX</th><th>PCR</th>
     </tr></thead><tbody id="sigtb"><tr><td colspan="13" class="load">Loading…</td></tr></tbody></table>
   </div>
-  <div style="display:flex;justify-content:center;align-items:center;gap:12px">
+  <div class="pgrow">
     <button class="btn" id="sprev" onclick="sigGo(-1)">‹ Prev</button>
-    <span id="spinfo" class="info"></span>
+    <span id="spinfo" class="info-txt"></span>
     <button class="btn" id="snext" onclick="sigGo(1)">Next ›</button>
   </div>
 </div>
@@ -222,12 +559,12 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 <!-- ══════ ANALYTICS ══════════════════════════════════════════════ -->
 <div id="p-analytics" class="panel">
   <div class="stats">
-    <div class="sc"><div class="sc-lbl">Total</div>        <div id="at" class="sc-val">—</div></div>
-    <div class="sc"><div class="sc-lbl">CALLs</div>        <div id="ac" class="sc-val" style="color:var(--call)">—</div></div>
-    <div class="sc"><div class="sc-lbl">PUTs</div>         <div id="ap" class="sc-val" style="color:var(--put)">—</div></div>
-    <div class="sc"><div class="sc-lbl">Ultra Strong</div> <div id="au" class="sc-val" style="color:var(--ultra)">—</div></div>
-    <div class="sc"><div class="sc-lbl">Avg Score</div>    <div id="aa" class="sc-val">—</div></div>
-    <div class="sc"><div class="sc-lbl">Best Score</div>   <div id="ab" class="sc-val">—</div></div>
+    <div class="sc"><div class="sc-lbl">Total Signals</div>  <div id="at" class="sc-val">—</div></div>
+    <div class="sc"><div class="sc-lbl">CALLs</div>          <div id="ac" class="sc-val" style="color:var(--call)">—</div></div>
+    <div class="sc"><div class="sc-lbl">PUTs</div>           <div id="ap" class="sc-val" style="color:var(--put)">—</div></div>
+    <div class="sc"><div class="sc-lbl">Ultra Strong</div>   <div id="au" class="sc-val" style="color:var(--ultra)">—</div></div>
+    <div class="sc"><div class="sc-lbl">Avg Score</div>      <div id="aa" class="sc-val">—</div></div>
+    <div class="sc"><div class="sc-lbl">Best Score</div>     <div id="ab" class="sc-val">—</div></div>
   </div>
   <div class="agrid">
     <div class="ccard"><div class="ctitle">Daily Signals — CALL vs PUT</div><canvas id="ch1"></canvas></div>
@@ -243,7 +580,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
     <input type="date" id="sld">
     <button class="btn pri" onclick="loadScans()">Filter</button>
     <button class="btn" onclick="document.getElementById('sld').value='';loadScans()">Today</button>
-    <span id="slcnt" class="info"></span>
+    <span id="slcnt" class="info-txt"></span>
   </div>
   <div class="twrap">
     <table><thead><tr>
@@ -253,96 +590,87 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
     </tr></thead><tbody id="sltb"><tr><td colspan="9" class="load">Loading…</td></tr></tbody></table>
   </div>
 </div>
-
-<!-- ══════ STOCKS ════════════════════════════════════════════════ -->
-<div id="p-stocks" class="panel">
-  <div class="stats">
-    <div class="sc"><div class="sc-lbl">Stocks Scanned</div><div id="sk0" class="sc-val">—</div></div>
-    <div class="sc"><div class="sc-lbl">Signals Today</div><div id="sk1" class="sc-val">—</div></div>
-    <div class="sc"><div class="sc-lbl">Activity</div>       <div id="sk2" class="sc-val">—</div></div>
-    <div class="sc"><div class="sc-lbl">Session</div>        <div id="sk3" class="sc-val" style="font-size:13px">—</div></div>
-    <div class="sc"><div class="sc-lbl">Last Scan</div>      <div id="sk4" class="sc-val" style="font-size:13px">—</div></div>
-  </div>
-
-  <div class="stitle">Latest Stock Signals Today</div>
-  <div id="sk-lsigs"><div class="load">Loading…</div></div>
-
-  <div class="frow" style="margin-top:20px">
-    <select id="sk-fd"><option value="">All Directions</option><option>CALL</option><option>PUT</option></select>
-    <select id="sk-ft"><option value="">All Types</option><option value="NORMAL">Normal</option><option value="SPIKE">⚡ Spike</option><option value="REVERSAL">↩ Reversal</option></select>
-    <input type="date" id="sk-fdf"><input type="date" id="sk-fdt">
-    <button class="btn pri" onclick="stockSigApply()">Apply</button>
-    <button class="btn" onclick="stockSigClear()">Clear</button>
-    <span id="sk-cnt" class="info"></span>
-  </div>
-  <div class="twrap">
-    <table><thead><tr>
-      <th>Date</th><th>Time</th><th>Symbol</th><th>Dir</th><th>Type</th>
-      <th>Score</th><th>LTP</th><th>OI%</th><th>Vol%</th>
-      <th>DOM</th><th>Buildup</th><th>SL → Target</th><th>VIX</th>
-    </tr></thead><tbody id="sk-tb"><tr><td colspan="13" class="load">Loading…</td></tr></tbody></table>
-  </div>
-  <div style="display:flex;justify-content:center;align-items:center;gap:12px;margin-bottom:28px">
-    <button class="btn" id="sk-prev" onclick="stockGo(-1)">‹ Prev</button>
-    <span id="sk-pinfo" class="info"></span>
-    <button class="btn" id="sk-next" onclick="stockGo(1)">Next ›</button>
-  </div>
-
-  <div class="stitle">Stock Scan Log</div>
-  <div class="frow">
-    <input type="date" id="sk-sld">
-    <button class="btn pri" onclick="loadStockScans()">Filter</button>
-    <button class="btn" onclick="document.getElementById('sk-sld').value='';loadStockScans()">Today</button>
-    <span id="sk-slcnt" class="info"></span>
-  </div>
-  <div class="twrap">
-    <table><thead><tr>
-      <th>#</th><th>Time</th><th>Stocks</th><th>Activity</th>
-      <th>Session</th><th>Top Pick</th><th>Score</th><th>Alerts</th><th>VIX</th><th>PCR</th>
-    </tr></thead><tbody id="sk-sltb"><tr><td colspan="10" class="load">Loading…</td></tr></tbody></table>
-  </div>
-</div>
 </main>
 
 <script>
-/* ── Config check ───────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   CORE SETUP
+═══════════════════════════════════════════════════════════════════ */
 const _ok = SUPABASE_URL !== 'https://YOUR_PROJECT_ID.supabase.co'
 if(!_ok) document.getElementById('setup').style.display='block'
-
 const sb = _ok ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null
 const charts = {}
+const PG = 50
 
-/* ── Helpers ─────────────────────────────────────────────────────── */
-const fmt = (n,d=0) => n==null?'—':Number(n).toLocaleString('en-IN',{minimumFractionDigits:d,maximumFractionDigits:d})
-const sc  = s => s>=85?'var(--ultra)':s>=75?'var(--call)':s>=65?'var(--medium)':'var(--weak)'
-const rc  = r => !r?'var(--muted)':r.includes('ULTRA')?'var(--ultra)':r==='STRONG'?'var(--call)':r==='MEDIUM'?'var(--medium)':'var(--weak)'
-const rn  = s => s>=85?'ULTRA STRONG':s>=75?'STRONG':s>=65?'MEDIUM':'WEAK'
+/* ── Helpers ───────────────────────────────────────────────────── */
+const fmt  = (n,d=0) => n==null?'—':Number(n).toLocaleString('en-IN',{minimumFractionDigits:d,maximumFractionDigits:d})
+const fmtR = (n,d=2) => n==null?'—':('₹'+Number(n).toLocaleString('en-IN',{minimumFractionDigits:d,maximumFractionDigits:d}))
 const today = () => new Date().toISOString().split('T')[0]
 
-/* ── Tab switching ───────────────────────────────────────────────── */
+/** Score → hex color (for inline styles and CSS vars) */
+function scoreColor(s){
+  if(s==null)return'#5b7699'
+  if(s>=85) return'#a78bfa'  /* ultra  */
+  if(s>=75) return'#10b981'  /* call   */
+  if(s>=60) return'#f59e0b'  /* gold   */
+  return'#f43f5e'             /* put/low*/
+}
+/** Score → gradient CSS for bars (goes L→R red→amber→green→violet) */
+function scoreBarGradient(s){
+  if(s>=85) return'linear-gradient(90deg,#6366f1,#a78bfa)'
+  if(s>=75) return'linear-gradient(90deg,#10b981,#34d399)'
+  if(s>=60) return'linear-gradient(90deg,#f59e0b,#fbbf24)'
+  return'linear-gradient(90deg,#ef4444,#f87171)'
+}
+/** Score → rating label */
+const rn = s => s>=85?'ULTRA':s>=75?'STRONG':s>=60?'MEDIUM':'WEAK'
+const rc = r => !r?'#5b7699':r.includes('ULTRA')?'#a78bfa':r==='STRONG'?'#10b981':r==='MEDIUM'?'#f59e0b':'#7a9cbd'
+
+/* ── Market status (IST) ───────────────────────────────────────── */
+function updateMarketStatus(){
+  const now = new Date()
+  const ist  = new Date(now.toLocaleString('en-US',{timeZone:'Asia/Kolkata'}))
+  const h=ist.getHours(), m=ist.getMinutes(), day=ist.getDay()
+  const mins=h*60+m
+  const open=(day>=1&&day<=5)&&mins>=9*60+15&&mins<=15*60+30
+  const pill=document.getElementById('mkt-pill')
+  const txt =document.getElementById('mkt-txt')
+  pill.className='mkt-pill '+(open?'open':'closed')
+  txt.textContent=open?'Market Open':'Market Closed'
+}
+
+/* ── Tab switching ─────────────────────────────────────────────── */
 document.querySelectorAll('.tbtn').forEach(b=>b.addEventListener('click',()=>{
   const t=b.dataset.tab
   document.querySelectorAll('.tbtn').forEach(x=>x.classList.remove('active'))
   document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'))
   b.classList.add('active')
   document.getElementById('p-'+t).classList.add('active')
-  if(t==='signals')  loadSigs()
-  if(t==='analytics')loadAnalytics()
-  if(t==='scanlog')  loadScans()
-  if(t==='stocks')   loadStocks()
+  if(t==='signals')   loadSigs()
+  if(t==='analytics') loadAnalytics()
+  if(t==='scanlog')   loadScans()
+  if(t==='stocks')    loadStocks()
 }))
 
-/* ── Status UI ───────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   LIVE TAB — status + index cards
+═══════════════════════════════════════════════════════════════════ */
 function setStatus(row){
   const s=(row.status||'stopped').toLowerCase()
   const b=document.getElementById('sbadge')
   b.className=`sbadge ${s}`
   document.getElementById('stxt').textContent=
-    s==='running'?'🟢 Running':s==='sleeping'?'💤 Sleeping':'🔴 Stopped'
+    s==='running'?'Running':s==='sleeping'?'Sleeping':'Stopped'
+  // Stats row
   document.getElementById('s0').textContent=row.scan_count??'—'
   document.getElementById('s1').textContent=row.alerts_today??'—'
   document.getElementById('s2').textContent=row.vix?Number(row.vix).toFixed(1):'—'
   document.getElementById('s3').textContent=row.pcr?Number(row.pcr).toFixed(2):'—'
+  // Header pills
+  document.getElementById('hd-vix').textContent=row.vix?Number(row.vix).toFixed(1):'—'
+  document.getElementById('hd-pcr').textContent=row.pcr?Number(row.pcr).toFixed(2):'—'
+  document.getElementById('hd-sc').textContent=row.scan_count??'—'
+  document.getElementById('hd-al').textContent=row.alerts_today??'—'
   if(row.last_scan_at){
     const d=new Date(row.last_scan_at)
     document.getElementById('s4').textContent=
@@ -352,21 +680,21 @@ function setStatus(row){
     'Updated '+new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',hour12:true})
 }
 
-/* ── Instrument cards ────────────────────────────────────────────── */
-function setCard(key, score, dir, rsi, ltp){
+function setCard(key,score,dir,rsi,ltp){
   if(score==null) return
   const d=dir==='CALL'?'c':'p'
-  const ic=document.getElementById('ic-'+key)
-  ic.className='icard '+d
+  document.getElementById('ic-'+key).className='icard '+d
   const db=document.getElementById('id-'+key)
   db.textContent=(dir==='CALL'?'▲ ':'▼ ')+dir; db.className='dbadge '+d
   const bar=document.getElementById('ib-'+key)
-  bar.style.width=Math.min(100,score)+'%'; bar.style.background=sc(score)
+  bar.style.width=Math.min(100,score)+'%'
+  bar.style.background=scoreBarGradient(score)
   const sn=document.getElementById('is-'+key)
-  sn.textContent=score; sn.className='snum '+d
-  const rb=document.getElementById('ir-'+key)
-  const rat=rn(score)
-  rb.textContent=rat; rb.style.color=rc(rat)
+  sn.textContent=score; sn.style.color=scoreColor(score)
+  const rat=rn(score), rb=document.getElementById('ir-'+key)
+  rb.textContent=rat
+  const col=scoreColor(score)
+  rb.style.cssText=`color:${col};background:${col}18;border:1px solid ${col}40;font-size:10px;padding:2px 9px;border-radius:8px`
   document.getElementById('ii-'+key+'-rsi').textContent=rsi?Number(rsi).toFixed(1):'—'
   document.getElementById('ii-'+key+'-ltp').textContent=ltp?fmt(ltp):'—'
 }
@@ -377,330 +705,224 @@ function setScan(row){
   setCard('SENSEX',   row.sensex_score,   row.sensex_dir,   row.sensex_rsi,   row.sensex_ltp)
 }
 
-/* ── Latest signals on Live tab ──────────────────────────────────── */
+/* ── Latest index signals on Live tab ─────────────────────────── */
 function renderLatest(rows){
   const w=document.getElementById('lsigs')
-  if(!rows.length){w.innerHTML='<div class="empty">No signals today yet</div>';return}
+  if(!rows.length){
+    w.innerHTML='<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">No index signals today yet</div></div>'
+    return
+  }
   w.innerHTML='<div class="sgrid">'+rows.slice(0,6).map(s=>{
     const d=s.direction==='CALL'?'c':'p'
-    const u=s.rating?.includes('ULTRA')?'u ':''
+    const u=s.rating?.includes('ULTRA')?'spike-card ':''
+    const p=Math.min(100,s.score||0)
     return `<div class="scard ${u}${d}">
-    <div class="sch">
-      <span class="scinstr"><span class="dbadge ${d}" style="margin-right:5px">${s.direction==='CALL'?'▲':'▼'} ${s.direction}</span>${s.instrument}</span>
-      <span class="sctime">${s.signal_time||''}</span>
-    </div>
-    <div class="scb">
-      <span class="l">Score</span><span class="v" style="color:${sc(s.score)}">${s.score}/100 · ${s.rating||''}</span>
-      <span class="l">LTP</span>  <span class="v">${fmt(s.ltp)}</span>
-      <span class="l">Strike</span><span class="v">${s.strike||'—'} ${s.option_type||''}</span>
-      <span class="l">SL</span>   <span class="v" style="color:var(--put)">${fmt(s.sl_level)}</span>
-      <span class="l">Target</span><span class="v" style="color:var(--call)">${fmt(s.target_level)}</span>
-      <span class="l">Fib</span>  <span class="v">${s.fib_at_level?'✅ '+s.fib_level:'—'}</span>
-    </div></div>`}).join('')+'</div>'
+      <div class="sch">
+        <div class="scinstr">
+          <span class="sc-sym">${s.instrument}</span>
+          <div class="sc-badges">
+            <span class="dbadge ${d}">${s.direction==='CALL'?'▲':'▼'} ${s.direction}</span>
+            <span style="font-size:10px;font-weight:700;color:${scoreColor(s.score)}">${rn(s.score)}</span>
+          </div>
+        </div>
+        <span class="sctime">${s.signal_time||''}</span>
+      </div>
+      <div class="sc-score-row">
+        <div class="sc-score-track"><div class="sc-score-fill" style="width:${p}%;background:${scoreBarGradient(s.score)}"></div></div>
+        <span class="sc-score-num" style="color:${scoreColor(s.score)}">${s.score}</span>
+      </div>
+      <div class="scdata">
+        <span class="l">LTP</span>     <span class="v">${fmt(s.ltp)}</span>
+        <span class="l">Strike</span>  <span class="v">${s.strike||'—'} ${s.option_type||''}</span>
+        <span class="l">RSI</span>     <span class="v">${s.rsi?Number(s.rsi).toFixed(1):'—'}</span>
+        <span class="l">Fib</span>     <span class="v" style="color:${s.fib_at_level?'var(--call)':'var(--muted)'}">${s.fib_at_level?'✓ '+s.fib_level:'—'}</span>
+      </div>
+      <div class="sl-tgt">
+        <span class="sl-tgt-lbl">SL</span>
+        <span class="sl-tgt-sl">${fmt(s.sl_level)}</span>
+        <span class="sl-tgt-arrow">——▶</span>
+        <span class="sl-tgt-tgt">${fmt(s.target_level)}</span>
+        <span class="sl-tgt-lbl">Target</span>
+      </div>
+    </div>`
+  }).join('')+'</div>'
 }
 
-/* ── Toast notifications ─────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   STOCKS TAB
+═══════════════════════════════════════════════════════════════════ */
+
+/* ── Helpers for stock UI ──────────────────────────────────────── */
+function buildupBadge(bu){
+  if(!bu) return '<span class="bubadge bu-xx">—</span>'
+  const b=bu.toLowerCase()
+  if(b.includes('long build'))   return `<span class="bubadge bu-lb">↑ Long Build</span>`
+  if(b.includes('short build'))  return `<span class="bubadge bu-sb">↓ Short Build</span>`
+  if(b.includes('short cover'))  return `<span class="bubadge bu-sc">↑ Short Cover</span>`
+  if(b.includes('long unwind'))  return `<span class="bubadge bu-lu">↓ Long Unwind</span>`
+  return `<span class="bubadge bu-xx">${bu}</span>`
+}
+
+function signalTypeBadge(t){
+  if(t==='SPIKE')    return '<span class="stbadge spike">⚡ Spike</span>'
+  if(t==='REVERSAL') return '<span class="stbadge reversal">↩ Reversal</span>'
+  return '<span class="stbadge normal">• Normal</span>'
+}
+
+function domBarHtml(imb){
+  if(imb==null) return '<div style="font-size:11px;color:var(--muted)">— DOM</div>'
+  const pos = imb>0 ? Math.min(100,imb)  : 0
+  const neg = imb<0 ? Math.min(100,-imb) : 0
+  const col = imb>10?'var(--call)':imb<-10?'var(--put)':'var(--gold)'
+  const lbl = imb>10?`+${imb.toFixed(0)}% BUY`:imb<-10?`${imb.toFixed(0)}% SELL`:`${imb.toFixed(0)}% Neutral`
+  return `<div>
+    <div class="dom-label">DOM Imbalance</div>
+    <div class="dom-track">
+      <div class="dom-half left"><div class="dom-neg" style="width:${neg}%"></div></div>
+      <div class="dom-center-mark"></div>
+      <div class="dom-half"><div class="dom-pos" style="width:${pos}%"></div></div>
+    </div>
+    <div class="dom-pct" style="color:${col}">${lbl}</div>
+  </div>`
+}
+
+/* ── Stock status cards ────────────────────────────────────────── */
+function updateStockStatus(r){
+  if(r.stocks_count!=null) document.getElementById('sk0').textContent=r.stocks_count
+  if(r.activity!=null){
+    const a=Math.round(r.activity)
+    const col=a>=70?'var(--call)':a>=40?'var(--gold)':'var(--muted2)'
+    document.getElementById('sk2').innerHTML=`<span style="color:${col}">${a}</span><span style="font-size:13px;color:var(--muted)">/100</span>`
+  }
+  if(r.session)   document.getElementById('sk3').textContent=r.session
+  if(r.scan_time) document.getElementById('sk4').textContent=r.scan_time.slice(0,5)
+}
+
+/* ── Toast for stock signals ───────────────────────────────────── */
+function toastStock(sig){
+  const d=sig.direction==='CALL'?'c':'p'
+  const cls=sig.signal_type==='SPIKE'?'s':d
+  const icon=sig.signal_type==='SPIKE'?'⚡':sig.signal_type==='REVERSAL'?'↩':'🔔'
+  const t=document.createElement('div')
+  t.className=`toast ${cls}`
+  t.innerHTML=`<div style="font-weight:800;margin-bottom:4px">${icon} ${sig.symbol} ${sig.direction==='CALL'?'▲':'▼'} ${sig.direction}</div>
+    Score <b style="color:${scoreColor(sig.score)}">${sig.score}</b> &nbsp;·&nbsp; ${signalTypeBadge(sig.signal_type).replace(/<[^>]+>/g,'').trim()}<br>
+    LTP <b>${fmtR(sig.ltp,2)}</b> &nbsp;·&nbsp; OI <span style="color:var(--call)">+${fmt(sig.oi_change,1)}%</span><br>
+    SL <span style="color:var(--put)">${fmtR(sig.sl_price,1)}</span> ——▶ <span style="color:var(--call)">${fmtR(sig.target_price,1)}</span>`
+  document.getElementById('toasts').prepend(t)
+  setTimeout(()=>t.remove(),10000)
+}
+
+/* ── Toast for index signals ───────────────────────────────────── */
 function toast(sig){
   const d=sig.direction==='CALL'?'c':'p'
   const t=document.createElement('div')
   t.className=`toast ${d}`
-  t.innerHTML=`<b>${sig.instrument}</b> ${sig.direction==='CALL'?'▲':'▼'} ${sig.direction}
-  — Score <b style="color:${sc(sig.score)}">${sig.score}</b> · ${sig.rating}<br>
-  LTP <b>${fmt(sig.ltp)}</b> · Strike <b>${sig.strike} ${sig.option_type}</b><br>
-  SL <span style="color:var(--put)">${fmt(sig.sl_level)}</span>
-  → T <span style="color:var(--call)">${fmt(sig.target_level)}</span>`
+  t.innerHTML=`<div style="font-weight:800;margin-bottom:4px">${sig.instrument} ${sig.direction==='CALL'?'▲':'▼'} ${sig.direction}</div>
+    Score <b style="color:${scoreColor(sig.score)}">${sig.score}</b> · ${sig.rating}<br>
+    LTP <b>${fmt(sig.ltp)}</b> · ${sig.strike} ${sig.option_type}<br>
+    SL <span style="color:var(--put)">${fmt(sig.sl_level)}</span> ——▶ <span style="color:var(--call)">${fmt(sig.target_level)}</span>`
   document.getElementById('toasts').prepend(t)
   setTimeout(()=>t.remove(),9000)
 }
 
-/* ── Signals table ───────────────────────────────────────────────── */
-let _sigRows=[], _sigPage=0
-const PG=50
-
-function renderSigTable(rows){
-  const tb=document.getElementById('sigtb')
-  if(!rows.length){tb.innerHTML='<tr><td colspan="13" class="empty">No signals found</td></tr>';return}
-  tb.innerHTML=rows.map(s=>{
-    const d=s.direction==='CALL'?'c':'p'
-    const p=Math.min(100,Math.max(0,s.score))
-    return `<tr>
-    <td>${s.signal_date||'—'}</td>
-    <td>${s.signal_time||'—'}</td>
-    <td><b>${s.instrument}</b></td>
-    <td><span class="dbadge ${d}">${s.direction==='CALL'?'▲':'▼'} ${s.direction}</span></td>
-    <td style="color:${rc(s.rating)}">${s.rating||'—'}</td>
-    <td><div class="mini"><div class="mbar"><div class="mfill" style="width:${p}%;background:${sc(s.score)}"></div></div><b style="color:${sc(s.score)}">${s.score}</b></div></td>
-    <td>${fmt(s.ltp)}</td>
-    <td>${s.strike||'—'} <span style="color:var(--muted)">${s.option_type||''}</span></td>
-    <td><span style="color:var(--put)">${fmt(s.sl_level)}</span> → <span style="color:var(--call)">${fmt(s.target_level)}</span></td>
-    <td>${s.rsi?Number(s.rsi).toFixed(1):'—'}</td>
-    <td style="color:${s.fib_at_level?'var(--call)':'var(--muted)'}">${s.fib_at_level?'✅ '+s.fib_level:'—'}</td>
-    <td>${s.vix?Number(s.vix).toFixed(1):'—'}</td>
-    <td>${s.pcr?Number(s.pcr).toFixed(2):'—'}</td>
-    </tr>`}).join('')
-}
-
-async function loadSigs(f={}){
-  if(!sb)return
-  let q=sb.from('signals').select('*').order('created_at',{ascending:false})
-  if(f.i) q=q.eq('instrument',f.i)
-  if(f.d) q=q.eq('direction',f.d)
-  if(f.r) q=q.eq('rating',f.r)
-  if(f.df)q=q.gte('signal_date',f.df)
-  if(f.dt)q=q.lte('signal_date',f.dt)
-  const {data}=await q.range(_sigPage*PG,(_sigPage+1)*PG-1)
-  _sigRows=data||[]
-  renderSigTable(_sigRows)
-  document.getElementById('sigcnt').textContent=`${_sigRows.length} shown`
-  document.getElementById('spinfo').textContent=`Page ${_sigPage+1}`
-  document.getElementById('sprev').disabled=_sigPage===0
-}
-let _sigF={}
-function sigApply(){
-  _sigPage=0
-  _sigF={i:document.getElementById('fi').value,d:document.getElementById('fd').value,
-         r:document.getElementById('fr').value,df:document.getElementById('fdf').value,
-         dt:document.getElementById('fdt').value}
-  loadSigs(_sigF)
-}
-function sigClear(){
-  ['fi','fd','fr','fdf','fdt'].forEach(id=>document.getElementById(id).value='')
-  _sigPage=0;_sigF={};loadSigs()
-}
-function sigGo(dir){_sigPage=Math.max(0,_sigPage+dir);loadSigs(_sigF)}
-
-/* ── Analytics ──────────────────────────────────────────────────── */
-function mkChart(id,type,data,opts={}){
-  const c=document.getElementById(id)
-  if(!c)return
-  if(charts[id])charts[id].destroy()
-  charts[id]=new Chart(c,{type,data,options:{
-    responsive:true,animation:{duration:300},
-    plugins:{legend:{labels:{color:'#8b949e'}},...(opts.plugins||{})},
-    scales:opts.scales||{x:{ticks:{color:'#8b949e'},grid:{color:'rgba(255,255,255,.04)'}},
-                          y:{ticks:{color:'#8b949e'},grid:{color:'rgba(255,255,255,.04)'}}}
-  }})
-}
-
-async function loadAnalytics(){
-  if(!sb)return
-  const {data:sigs}=await sb.from('signals').select('signal_date,direction,rating,score,instrument')
-  if(!sigs?.length)return
-  const tot=sigs.length,cal=sigs.filter(s=>s.direction==='CALL').length
-  const put=sigs.filter(s=>s.direction==='PUT').length
-  const ult=sigs.filter(s=>s.rating?.includes('ULTRA')).length
-  const avg=Math.round(sigs.reduce((a,s)=>a+s.score,0)/tot)
-  const best=Math.max(...sigs.map(s=>s.score))
-  document.getElementById('at').textContent=tot
-  document.getElementById('ac').textContent=cal
-  document.getElementById('ap').textContent=put
-  document.getElementById('au').textContent=ult
-  document.getElementById('aa').textContent=avg
-  document.getElementById('ab').textContent=best
-
-  // Daily bar
-  const byD={}
-  sigs.forEach(s=>{byD[s.signal_date]=byD[s.signal_date]||{C:0,P:0};byD[s.signal_date][s.direction==='CALL'?'C':'P']++})
-  const dates=Object.keys(byD).sort().slice(-30)
-  mkChart('ch1','bar',{labels:dates.map(d=>d.slice(5)),datasets:[
-    {label:'CALL',data:dates.map(d=>byD[d].C||0),backgroundColor:'rgba(63,185,80,.7)'},
-    {label:'PUT', data:dates.map(d=>byD[d].P||0),backgroundColor:'rgba(248,81,73,.7)'}
-  ]},{scales:{x:{stacked:true,ticks:{color:'#8b949e'},grid:{display:false}},
-              y:{stacked:true,ticks:{color:'#8b949e'},grid:{color:'rgba(255,255,255,.04)'}}}})
-
-  // Score histogram
-  const bkts=[0,50,60,65,70,75,80,85,90,101]
-  const lbls=['<50','50-59','60-64','65-69','70-74','75-79','80-84','85-89','90+']
-  const hist=Array(9).fill(0)
-  sigs.forEach(s=>{for(let i=0;i<bkts.length-1;i++)if(s.score>=bkts[i]&&s.score<bkts[i+1]){hist[i]++;break}})
-  const hcols=hist.map((_,i)=>i>=7?'rgba(210,168,255,.8)':i>=5?'rgba(63,185,80,.8)':i>=3?'rgba(227,179,65,.8)':'rgba(139,148,158,.6)')
-  mkChart('ch2','bar',{labels:lbls,datasets:[{label:'Signals',data:hist,backgroundColor:hcols}]},
-    {plugins:{legend:{display:false}}})
-
-  // Donut
-  const inm={}
-  sigs.forEach(s=>inm[s.instrument]=(inm[s.instrument]||0)+1)
-  mkChart('ch3','doughnut',{labels:Object.keys(inm),
-    datasets:[{data:Object.values(inm),backgroundColor:['#58a6ff','#3fb950','#e3b341'],
-               borderColor:'#161b22',borderWidth:2}]},
-    {plugins:{legend:{position:'bottom',labels:{color:'#8b949e'}}}})
-
-  // Score trend
-  const {data:sc2}=await sb.from('scans').select('scan_time,nifty50_score,banknifty_score,sensex_score')
-    .order('created_at',{ascending:false}).limit(60)
-  if(sc2?.length){
-    const r=[...sc2].reverse()
-    mkChart('ch4','line',{labels:r.map(s=>s.scan_time||''),datasets:[
-      {label:'NIFTY50',  data:r.map(s=>s.nifty50_score),  borderColor:'#58a6ff',fill:false,tension:.3,pointRadius:2},
-      {label:'BANKNIFTY',data:r.map(s=>s.banknifty_score),borderColor:'#3fb950',fill:false,tension:.3,pointRadius:2},
-      {label:'SENSEX',   data:r.map(s=>s.sensex_score),   borderColor:'#e3b341',fill:false,tension:.3,pointRadius:2},
-    ]},{scales:{y:{min:0,max:100,ticks:{color:'#8b949e'},grid:{color:'rgba(255,255,255,.04)'}},
-                x:{ticks:{maxTicksLimit:12,color:'#8b949e'},grid:{display:false}}},
-        plugins:{legend:{labels:{color:'#8b949e'}}}})
-  }
-}
-
-/* ── Scan log ────────────────────────────────────────────────────── */
-async function loadScans(){
-  if(!sb)return
-  const d=document.getElementById('sld').value||today()
-  const {data}=await sb.from('scans').select('*').eq('scan_date',d).order('created_at',{ascending:false})
-  const rows=data||[]
-  document.getElementById('slcnt').textContent=`${rows.length} scans`
-  const tb=document.getElementById('sltb')
-  if(!rows.length){tb.innerHTML='<tr><td colspan="9" class="empty">No scans on this date</td></tr>';return}
-  const ms=(sc2,dr)=>{
-    if(sc2==null)return'—'
-    const d=dr==='CALL'?'c':'p',p=Math.min(100,Math.max(0,sc2)),col=sc(sc2)
-    return `<div class="sscore"><div class="b"><div class="f" style="width:${p}%;background:${col}"></div></div>
-    <span style="color:${col}">${sc2}</span>
-    <span class="dbadge ${d}" style="font-size:10px;padding:1px 5px">${dr==='CALL'?'▲':'▼'}</span></div>`
-  }
-  tb.innerHTML=rows.map(r=>`<tr>
-    <td style="color:var(--muted)">#${r.scan_number||'—'}</td>
-    <td>${r.scan_date||'—'}</td><td>${r.scan_time||'—'}</td>
-    <td>${ms(r.nifty50_score,r.nifty50_dir)}</td>
-    <td>${ms(r.banknifty_score,r.banknifty_dir)}</td>
-    <td>${ms(r.sensex_score,r.sensex_dir)}</td>
-    <td>${r.vix?Number(r.vix).toFixed(1):'—'}</td>
-    <td>${r.pcr?Number(r.pcr).toFixed(2):'—'}</td>
-    <td>${r.signals_count>0?`<span style="color:var(--call)">${r.signals_count} 🔔</span>`:'—'}</td>
-  </tr>`).join('')
-}
-
-/* ── Real-time ───────────────────────────────────────────────────── */
-function startRealtime(){
-  if(!sb)return
-  sb.channel('live')
-    .on('postgres_changes',{event:'UPDATE',schema:'public',table:'bot_status'},
-        ({new:r})=>setStatus(r))
-    .on('postgres_changes',{event:'INSERT',schema:'public',table:'scans'},
-        ({new:r})=>{
-          setScan(r)
-          if(document.getElementById('p-scanlog').classList.contains('active'))loadScans()
-        })
-    .on('postgres_changes',{event:'INSERT',schema:'public',table:'signals'},
-        ({new:r})=>{
-          toast(r)
-          if(document.getElementById('p-live').classList.contains('active'))loadTodaySigs()
-          if(document.getElementById('p-signals').classList.contains('active'))loadSigs(_sigF)
-        })
-    .on('postgres_changes',{event:'INSERT',schema:'public',table:'stock_signals'},
-        ({new:r})=>{
-          toastStock(r)
-          if(document.getElementById('p-stocks').classList.contains('active'))loadStocks()
-        })
-    .on('postgres_changes',{event:'INSERT',schema:'public',table:'stock_scans'},
-        ({new:r})=>{
-          updateStockStatus(r)
-          if(document.getElementById('p-stocks').classList.contains('active'))loadStockScans()
-        })
-    .subscribe()
-}
-
-/* ── Boot ────────────────────────────────────────────────────────── */
-async function loadTodaySigs(){
-  if(!sb)return
-  const {data}=await sb.from('signals').select('*').eq('signal_date',today()).order('created_at',{ascending:false})
-  renderLatest(data||[])
-}
-async function boot(){
-  if(!sb)return
-  const [{data:bs},{data:sc3}]=await Promise.all([
-    sb.from('bot_status').select('*').eq('id',1).single(),
-    sb.from('scans').select('*').order('created_at',{ascending:false}).limit(1)
-  ])
-  if(bs) setStatus(bs)
-  if(sc3?.[0]) setScan(sc3[0])
-  await loadTodaySigs()
-  startRealtime()
-}
-document.addEventListener('DOMContentLoaded',boot)
-
-/* ══════════════════════════════════════════════════════════════════
-   STOCKS TAB — NSE Stock Options Bot
-   Tables: stock_signals, stock_scans
-═══════════════════════════════════════════════════════════════════ */
-
-/* ── Stock status cards ──────────────────────────────────────────── */
-function updateStockStatus(r){
-  if(r.stocks_count!=null) document.getElementById('sk0').textContent=r.stocks_count
-  if(r.activity!=null)     document.getElementById('sk2').textContent=Math.round(r.activity)+'/100'
-  if(r.session)            document.getElementById('sk3').textContent=r.session
-  if(r.scan_time)          document.getElementById('sk4').textContent=r.scan_time.slice(0,5)
-}
-
-/* ── Toast for stock signals ─────────────────────────────────────── */
-function toastStock(sig){
-  const d=sig.direction==='CALL'?'c':'p'
-  const icon=sig.signal_type==='SPIKE'?'⚡':sig.signal_type==='REVERSAL'?'↩':'🔔'
-  const t=document.createElement('div')
-  t.className=`toast ${d}`
-  t.innerHTML=`<b>${icon} ${sig.symbol}</b> ${sig.direction==='CALL'?'▲':'▼'} ${sig.direction}
-  — Score <b style="color:${sc(sig.score)}">${sig.score}</b><br>
-  LTP <b>₹${fmt(sig.ltp,2)}</b> · OI <span style="color:var(--call)">+${fmt(sig.oi_change,1)}%</span><br>
-  SL <span style="color:var(--put)">₹${fmt(sig.sl_price,1)}</span>
-  → T <span style="color:var(--call)">₹${fmt(sig.target_price,1)}</span>`
-  document.getElementById('toasts').prepend(t)
-  setTimeout(()=>t.remove(),9000)
-}
-
-/* ── Render latest stock signal cards (top of tab) ───────────────── */
+/* ── Render latest stock signal cards ──────────────────────────── */
 function renderLatestStock(rows){
   const w=document.getElementById('sk-lsigs')
   document.getElementById('sk1').textContent=rows.length
-  if(!rows.length){w.innerHTML='<div class="empty">No stock signals today yet</div>';return}
+  if(!rows.length){
+    w.innerHTML='<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">No stock signals today yet — bot is scanning…</div></div>'
+    return
+  }
   w.innerHTML='<div class="sgrid">'+rows.slice(0,6).map(s=>{
     const d=s.direction==='CALL'?'c':'p'
-    const icon=s.signal_type==='SPIKE'?'⚡ ':s.signal_type==='REVERSAL'?'↩ ':''
-    const domClr=s.dom_imbalance==null?'var(--muted)':s.dom_imbalance>10?'var(--call)':s.dom_imbalance<-10?'var(--put)':'var(--medium)'
-    return `<div class="scard ${d}">
-    <div class="sch">
-      <span class="scinstr"><span class="dbadge ${d}" style="margin-right:5px">${s.direction==='CALL'?'▲':'▼'} ${s.direction}</span>${icon}<b>${s.symbol}</b></span>
-      <span class="sctime">${s.signal_time||''}</span>
-    </div>
-    <div class="scb">
-      <span class="l">Score</span>  <span class="v" style="color:${sc(s.score)}">${s.score}/100</span>
-      <span class="l">LTP</span>    <span class="v">₹${fmt(s.ltp,2)}</span>
-      <span class="l">OI Build</span><span class="v" style="color:var(--call)">+${fmt(s.oi_change,1)}%</span>
-      <span class="l">Buildup</span><span class="v" style="font-size:11px">${s.buildup||'—'}</span>
-      <span class="l">DOM</span>    <span class="v" style="color:${domClr}">${s.dom_imbalance!=null?s.dom_imbalance.toFixed(0)+'%':'—'}</span>
-      <span class="l">SL</span>     <span class="v" style="color:var(--put)">₹${fmt(s.sl_price,1)}</span>
-      <span class="l">Target</span> <span class="v" style="color:var(--call)">₹${fmt(s.target_price,1)}</span>
-    </div></div>`}).join('')+'</div>'
+    const isSpike=s.signal_type==='SPIKE'
+    const p=Math.min(100,s.score||0)
+    const oi_col=s.oi_change>=0?'var(--call)':'var(--put)'
+    const vol_col=(s.vol_change||0)>=0?'var(--call)':'var(--put)'
+    return `<div class="scard ${isSpike?'spike-card ':''} ${d}">
+      <div class="sch">
+        <div class="scinstr">
+          <span class="sc-sym">${s.symbol}</span>
+          <div class="sc-badges">
+            <span class="dbadge ${d}">${s.direction==='CALL'?'▲':'▼'} ${s.direction}</span>
+            ${signalTypeBadge(s.signal_type)}
+          </div>
+        </div>
+        <span class="sctime">${(s.signal_time||'').slice(0,5)}</span>
+      </div>
+      <div class="sc-score-row">
+        <div class="sc-score-track">
+          <div class="sc-score-fill" style="width:${p}%;background:${scoreBarGradient(s.score)}"></div>
+        </div>
+        <span class="sc-score-num" style="color:${scoreColor(s.score)}">${s.score}</span>
+      </div>
+      <div class="scdata">
+        <span class="l">LTP</span>      <span class="v">${fmtR(s.ltp,2)}</span>
+        <span class="l">OI Change</span><span class="v" style="color:${oi_col}">${s.oi_change!=null?(s.oi_change>=0?'+':'')+s.oi_change.toFixed(1)+'%':'—'}</span>
+        <span class="l">Vol Surge</span><span class="v" style="color:${vol_col}">${s.vol_change!=null?(s.vol_change>=0?'+':'')+s.vol_change.toFixed(0)+'%':'—'}</span>
+        <span class="l">Buildup</span>  <span class="v">${buildupBadge(s.buildup)}</span>
+        <span class="l">Day Chg</span>  <span class="v" style="color:${(s.day_change||0)>=0?'var(--call)':'var(--put)'}">${s.day_change!=null?(s.day_change>=0?'+':'')+s.day_change.toFixed(2)+'%':'—'}</span>
+        <span class="l">PCR</span>      <span class="v">${s.pcr!=null?Number(s.pcr).toFixed(2):'—'}</span>
+      </div>
+      ${domBarHtml(s.dom_imbalance)}
+      <div class="sl-tgt" style="margin-top:10px">
+        <span class="sl-tgt-lbl">SL</span>
+        <span class="sl-tgt-sl">${fmtR(s.sl_price,1)}</span>
+        <span class="sl-tgt-arrow">——▶</span>
+        <span class="sl-tgt-tgt">${fmtR(s.target_price,1)}</span>
+        <span class="sl-tgt-lbl">Target</span>
+      </div>
+    </div>`
+  }).join('')+'</div>'
 }
 
-/* ── Render stock signals table ──────────────────────────────────── */
+/* ── Render stock signals table ────────────────────────────────── */
 function renderStockTable(rows){
   const tb=document.getElementById('sk-tb')
-  if(!rows.length){tb.innerHTML='<tr><td colspan="13" class="empty">No signals found</td></tr>';return}
+  if(!rows.length){
+    tb.innerHTML='<tr><td colspan="14"><div class="empty"><div class="empty-icon">🔍</div><div class="empty-text">No signals match filters</div></div></td></tr>'
+    return
+  }
   tb.innerHTML=rows.map(s=>{
     const d=s.direction==='CALL'?'c':'p'
     const p=Math.min(100,Math.max(0,s.score||0))
-    const domClr=s.dom_imbalance==null?'var(--muted)':s.dom_imbalance>10?'var(--call)':s.dom_imbalance<-10?'var(--put)':'var(--medium)'
+    const domClr=s.dom_imbalance==null?'var(--muted)':s.dom_imbalance>10?'var(--call)':s.dom_imbalance<-10?'var(--put)':'var(--gold)'
     const domTxt=s.dom_imbalance!=null?(s.dom_imbalance>0?'+':'')+s.dom_imbalance.toFixed(0)+'%':'—'
-    const icon=s.signal_type==='SPIKE'?'⚡':s.signal_type==='REVERSAL'?'↩':'•'
+    const oi=s.oi_change!=null?(s.oi_change>=0?'+':'')+s.oi_change.toFixed(1)+'%':'—'
+    const vol=s.vol_change!=null?(s.vol_change>=0?'+':'')+s.vol_change.toFixed(0)+'%':'—'
     return `<tr>
-    <td>${s.signal_date||'—'}</td>
-    <td>${(s.signal_time||'—').slice(0,5)}</td>
-    <td><b>${s.symbol}</b></td>
-    <td><span class="dbadge ${d}">${s.direction==='CALL'?'▲':'▼'} ${s.direction}</span></td>
-    <td style="color:var(--muted);font-size:12px">${icon} ${s.signal_type||'NORMAL'}</td>
-    <td><div class="mini"><div class="mbar"><div class="mfill" style="width:${p}%;background:${sc(s.score)}"></div></div><b style="color:${sc(s.score)}">${s.score}</b></div></td>
-    <td>₹${fmt(s.ltp,2)}</td>
-    <td style="color:var(--call)">${s.oi_change!=null?'+'+s.oi_change.toFixed(1)+'%':'—'}</td>
-    <td style="color:${(s.vol_change||0)>0?'var(--call)':'var(--put)'}">${s.vol_change!=null?s.vol_change.toFixed(0)+'%':'—'}</td>
-    <td style="color:${domClr}">${domTxt}</td>
-    <td style="font-size:11px;color:var(--muted)">${(s.buildup||'—').replace(' Build Up','')}</td>
-    <td><span style="color:var(--put)">₹${fmt(s.sl_price,1)}</span> → <span style="color:var(--call)">₹${fmt(s.target_price,1)}</span></td>
-    <td>${s.vix!=null?Number(s.vix).toFixed(1):'—'}</td>
-    </tr>`}).join('')
+      <td style="color:var(--muted2);font-size:12px">${s.signal_date||'—'}</td>
+      <td style="color:var(--muted2)">${(s.signal_time||'—').slice(0,5)}</td>
+      <td class="td-sym">${s.symbol}</td>
+      <td><span class="dbadge ${d}">${s.direction==='CALL'?'▲':'▼'} ${s.direction}</span></td>
+      <td>${signalTypeBadge(s.signal_type)}</td>
+      <td>
+        <div class="mini-score">
+          <div class="mini-bar"><div class="mini-fill" style="width:${p}%;background:${scoreBarGradient(s.score)}"></div></div>
+          <span class="mini-num" style="color:${scoreColor(s.score)}">${s.score}</span>
+        </div>
+      </td>
+      <td style="font-weight:700">${fmtR(s.ltp,2)}</td>
+      <td style="color:${s.oi_change>=0?'#10b981':'#f43f5e'}">${oi}</td>
+      <td style="color:${(s.vol_change||0)>=0?'var(--call)':'var(--put)'}">${vol}</td>
+      <td style="color:${domClr}">${domTxt}</td>
+      <td>${buildupBadge(s.buildup)}</td>
+      <td>
+        <span style="color:var(--put);font-weight:600">${fmtR(s.sl_price,1)}</span>
+        <span style="color:var(--muted)"> → </span>
+        <span style="color:var(--call);font-weight:600">${fmtR(s.target_price,1)}</span>
+      </td>
+      <td><span class="sessbadge">${s.session||'—'}</span></td>
+      <td style="color:var(--muted2)">${s.vix!=null?Number(s.vix).toFixed(1):'—'}</td>
+    </tr>`
+  }).join('')
 }
 
-/* ── Load stock signals ──────────────────────────────────────────── */
+/* ── Load stock signals ────────────────────────────────────────── */
 let _skRows=[], _skPage=0, _skF={}
 async function loadStockSignals(f={}){
-  if(!sb)return
+  if(!sb) return
   let q=sb.from('stock_signals').select('*').order('created_at',{ascending:false})
   if(f.d)  q=q.eq('direction',f.d)
   if(f.t)  q=q.eq('signal_type',f.t)
@@ -725,47 +947,289 @@ function stockSigClear(){
 }
 function stockGo(dir){_skPage=Math.max(0,_skPage+dir);loadStockSignals(_skF)}
 
-/* ── Load stock scan log ─────────────────────────────────────────── */
+/* ── Load stock scan log ───────────────────────────────────────── */
 async function loadStockScans(){
-  if(!sb)return
+  if(!sb) return
   const d=document.getElementById('sk-sld').value||today()
   const {data}=await sb.from('stock_scans').select('*').eq('scan_date',d).order('created_at',{ascending:false})
   const rows=data||[]
   document.getElementById('sk-slcnt').textContent=`${rows.length} scans`
   const tb=document.getElementById('sk-sltb')
-  if(!rows.length){tb.innerHTML='<tr><td colspan="10" class="empty">No scans on this date</td></tr>';return}
+  if(!rows.length){
+    tb.innerHTML='<tr><td colspan="11"><div class="empty"><div class="empty-icon">📋</div><div class="empty-text">No scans on this date</div></div></td></tr>'
+    return
+  }
   tb.innerHTML=rows.map(r=>{
-    const actCol=r.activity>=70?'var(--call)':r.activity>=40?'var(--medium)':'var(--muted)'
-    return`<tr>
-    <td style="color:var(--muted)">#${r.scan_number||'—'}</td>
-    <td>${(r.scan_time||'—').slice(0,5)}</td>
-    <td>${r.stocks_count||'—'}</td>
-    <td style="color:${actCol}">${r.activity!=null?Math.round(r.activity)+'/100':'—'}</td>
-    <td style="font-size:12px;color:var(--muted)">${r.session||'—'}</td>
-    <td><b>${r.top_symbol||'—'}</b></td>
-    <td>${r.top_score!=null?`<span style="color:${sc(r.top_score)}">${r.top_score}</span>`:'—'}</td>
-    <td>${r.alerts_sent>0?`<span style="color:var(--call)">${r.alerts_sent} 🔔</span>`:'—'}</td>
-    <td>${r.vix!=null?Number(r.vix).toFixed(1):'—'}</td>
-    <td>${r.pcr!=null?Number(r.pcr).toFixed(2):'—'}</td>
-    </tr>`}).join('')
+    const a=Math.round(r.activity||0)
+    const actCol=a>=70?'var(--call)':a>=40?'var(--gold)':'var(--muted2)'
+    const actBar=`<div class="act-bar"><div class="act-track"><div class="act-fill" style="width:${a}%;background:${a>=70?'var(--call)':a>=40?'var(--gold)':'var(--muted2)'}"></div></div><span style="color:${actCol}">${a}</span></div>`
+    const dirHtml=r.top_direction?`<span class="dbadge ${r.top_direction==='CALL'?'c':'p'}">${r.top_direction==='CALL'?'▲':'▼'} ${r.top_direction}</span>`:'—'
+    return `<tr>
+      <td style="color:var(--muted);font-size:12px">#${r.scan_number||'—'}</td>
+      <td style="color:var(--muted2)">${(r.scan_time||'—').slice(0,5)}</td>
+      <td style="font-weight:600">${r.stocks_count||'—'}</td>
+      <td>${actBar}</td>
+      <td><span class="sessbadge">${r.session||'—'}</span></td>
+      <td style="font-weight:800;color:var(--text2)">${r.top_symbol||'—'}</td>
+      <td>${r.top_score!=null?`<span style="color:${scoreColor(r.top_score)};font-weight:800">${r.top_score}</span>`:'—'}</td>
+      <td>${dirHtml}</td>
+      <td>${r.alerts_sent>0?`<span style="color:var(--call);font-weight:700">${r.alerts_sent} 🔔</span>`:'<span style="color:var(--muted)">—</span>'}</td>
+      <td style="color:var(--muted2)">${r.vix!=null?Number(r.vix).toFixed(1):'—'}</td>
+      <td style="color:var(--muted2)">${r.pcr!=null?Number(r.pcr).toFixed(2):'—'}</td>
+    </tr>`
+  }).join('')
 }
 
-/* ── Load everything for Stocks tab ─────────────────────────────── */
+/* ── Load everything for Stocks tab ───────────────────────────── */
 async function loadStocks(){
-  if(!sb)return
-  // Latest today's signals for cards
-  const {data:today_sigs}=await sb.from('stock_signals').select('*')
-    .eq('signal_date',today()).order('created_at',{ascending:false})
-  renderLatestStock(today_sigs||[])
-  // Signal table (no filter, first page)
-  await loadStockSignals(_skF)
-  // Latest scan status
-  const {data:last_scan}=await sb.from('stock_scans').select('*')
-    .order('created_at',{ascending:false}).limit(1)
-  if(last_scan?.[0]) updateStockStatus(last_scan[0])
-  // Scan log for today
+  if(!sb) return
+  const [todaySigRes, tableRes, lastScanRes] = await Promise.all([
+    sb.from('stock_signals').select('*').eq('signal_date',today()).order('created_at',{ascending:false}),
+    sb.from('stock_signals').select('*').order('created_at',{ascending:false}).range(0,PG-1),
+    sb.from('stock_scans').select('*').order('created_at',{ascending:false}).limit(1)
+  ])
+  renderLatestStock(todaySigRes.data||[])
+  _skRows=tableRes.data||[]
+  renderStockTable(_skRows)
+  document.getElementById('sk-cnt').textContent=`${_skRows.length} shown`
+  document.getElementById('sk-pinfo').textContent='Page 1'
+  document.getElementById('sk-prev').disabled=true
+  if(lastScanRes.data?.[0]) updateStockStatus(lastScanRes.data[0])
   await loadStockScans()
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   SIGNALS TAB
+═══════════════════════════════════════════════════════════════════ */
+function renderSigTable(rows){
+  const tb=document.getElementById('sigtb')
+  if(!rows.length){
+    tb.innerHTML='<tr><td colspan="13"><div class="empty"><div class="empty-icon">🔍</div><div class="empty-text">No signals found</div></div></td></tr>'
+    return
+  }
+  tb.innerHTML=rows.map(s=>{
+    const d=s.direction==='CALL'?'c':'p'
+    const p=Math.min(100,Math.max(0,s.score))
+    return `<tr>
+      <td style="color:var(--muted2);font-size:12px">${s.signal_date||'—'}</td>
+      <td style="color:var(--muted2)">${s.signal_time||'—'}</td>
+      <td class="td-sym">${s.instrument}</td>
+      <td><span class="dbadge ${d}">${s.direction==='CALL'?'▲':'▼'} ${s.direction}</span></td>
+      <td style="color:${rc(s.rating)};font-weight:700;font-size:12px">${s.rating||'—'}</td>
+      <td>
+        <div class="mini-score">
+          <div class="mini-bar"><div class="mini-fill" style="width:${p}%;background:${scoreBarGradient(s.score)}"></div></div>
+          <span class="mini-num" style="color:${scoreColor(s.score)}">${s.score}</span>
+        </div>
+      </td>
+      <td style="font-weight:700">${fmt(s.ltp)}</td>
+      <td>${s.strike||'—'} <span style="color:var(--muted)">${s.option_type||''}</span></td>
+      <td>
+        <span style="color:var(--put);font-weight:600">${fmt(s.sl_level)}</span>
+        <span style="color:var(--muted)"> → </span>
+        <span style="color:var(--call);font-weight:600">${fmt(s.target_level)}</span>
+      </td>
+      <td style="color:var(--muted2)">${s.rsi?Number(s.rsi).toFixed(1):'—'}</td>
+      <td style="color:${s.fib_at_level?'var(--call)':'var(--muted)'}">${s.fib_at_level?'✓ '+s.fib_level:'—'}</td>
+      <td style="color:var(--muted2)">${s.vix?Number(s.vix).toFixed(1):'—'}</td>
+      <td style="color:var(--muted2)">${s.pcr?Number(s.pcr).toFixed(2):'—'}</td>
+    </tr>`
+  }).join('')
+}
+
+let _sigRows=[], _sigPage=0, _sigF={}
+async function loadSigs(f={}){
+  if(!sb) return
+  let q=sb.from('signals').select('*').order('created_at',{ascending:false})
+  if(f.i) q=q.eq('instrument',f.i)
+  if(f.d) q=q.eq('direction',f.d)
+  if(f.r) q=q.eq('rating',f.r)
+  if(f.df)q=q.gte('signal_date',f.df)
+  if(f.dt)q=q.lte('signal_date',f.dt)
+  const {data}=await q.range(_sigPage*PG,(_sigPage+1)*PG-1)
+  _sigRows=data||[]
+  renderSigTable(_sigRows)
+  document.getElementById('sigcnt').textContent=`${_sigRows.length} shown`
+  document.getElementById('spinfo').textContent=`Page ${_sigPage+1}`
+  document.getElementById('sprev').disabled=_sigPage===0
+}
+function sigApply(){
+  _sigPage=0
+  _sigF={i:document.getElementById('fi').value,d:document.getElementById('fd').value,
+         r:document.getElementById('fr').value,df:document.getElementById('fdf').value,
+         dt:document.getElementById('fdt').value}
+  loadSigs(_sigF)
+}
+function sigClear(){
+  ['fi','fd','fr','fdf','fdt'].forEach(id=>document.getElementById(id).value='')
+  _sigPage=0;_sigF={};loadSigs()
+}
+function sigGo(dir){_sigPage=Math.max(0,_sigPage+dir);loadSigs(_sigF)}
+
+/* ═══════════════════════════════════════════════════════════════════
+   ANALYTICS TAB
+═══════════════════════════════════════════════════════════════════ */
+const CH_OPTS={
+  responsive:true,animation:{duration:400},
+  plugins:{legend:{labels:{color:'#4d6a8a',font:{size:11}}}},
+  scales:{
+    x:{ticks:{color:'#4d6a8a',font:{size:10}},grid:{color:'rgba(100,160,255,.04)'}},
+    y:{ticks:{color:'#4d6a8a',font:{size:10}},grid:{color:'rgba(100,160,255,.04)'}}
+  }
+}
+function mkChart(id,type,data,extra={}){
+  const c=document.getElementById(id);if(!c)return
+  if(charts[id])charts[id].destroy()
+  const opts=JSON.parse(JSON.stringify(CH_OPTS))
+  if(extra.scales) Object.assign(opts.scales,extra.scales)
+  if(extra.plugins) Object.assign(opts.plugins,extra.plugins)
+  charts[id]=new Chart(c,{type,data,options:opts})
+}
+
+async function loadAnalytics(){
+  if(!sb) return
+  const {data:sigs}=await sb.from('signals').select('signal_date,direction,rating,score,instrument')
+  if(!sigs?.length) return
+  const tot=sigs.length,cal=sigs.filter(s=>s.direction==='CALL').length
+  const put=sigs.filter(s=>s.direction==='PUT').length
+  const ult=sigs.filter(s=>s.rating?.includes('ULTRA')).length
+  const avg=Math.round(sigs.reduce((a,s)=>a+s.score,0)/tot)
+  const best=Math.max(...sigs.map(s=>s.score))
+  document.getElementById('at').textContent=tot
+  document.getElementById('ac').textContent=cal
+  document.getElementById('ap').textContent=put
+  document.getElementById('au').textContent=ult
+  document.getElementById('aa').textContent=avg
+  document.getElementById('ab').textContent=best
+
+  const byD={}
+  sigs.forEach(s=>{byD[s.signal_date]=byD[s.signal_date]||{C:0,P:0};byD[s.signal_date][s.direction==='CALL'?'C':'P']++})
+  const dates=Object.keys(byD).sort().slice(-30)
+  mkChart('ch1','bar',{labels:dates.map(d=>d.slice(5)),datasets:[
+    {label:'CALL',data:dates.map(d=>byD[d].C||0),backgroundColor:'rgba(16,185,129,.65)',borderRadius:3},
+    {label:'PUT', data:dates.map(d=>byD[d].P||0),backgroundColor:'rgba(244,63,94,.65)',borderRadius:3}
+  ]},{scales:{x:{stacked:true},y:{stacked:true}}})
+
+  const bkts=[0,50,60,65,70,75,80,85,90,101]
+  const lbls=['<50','50-59','60-64','65-69','70-74','75-79','80-84','85-89','90+']
+  const hist=Array(9).fill(0)
+  sigs.forEach(s=>{for(let i=0;i<bkts.length-1;i++)if(s.score>=bkts[i]&&s.score<bkts[i+1]){hist[i]++;break}})
+  const hcols=['rgba(244,63,94,.7)','rgba(244,63,94,.5)','rgba(245,158,11,.6)','rgba(245,158,11,.7)',
+               'rgba(245,158,11,.8)','rgba(16,185,129,.7)','rgba(16,185,129,.8)','rgba(167,139,250,.8)','rgba(167,139,250,.9)']
+  mkChart('ch2','bar',{labels:lbls,datasets:[{label:'Signals',data:hist,backgroundColor:hcols,borderRadius:4}]},
+    {plugins:{legend:{display:false}}})
+
+  const inm={}
+  sigs.forEach(s=>inm[s.instrument]=(inm[s.instrument]||0)+1)
+  mkChart('ch3','doughnut',{labels:Object.keys(inm),
+    datasets:[{data:Object.values(inm),
+               backgroundColor:['rgba(59,130,246,.8)','rgba(16,185,129,.8)','rgba(245,158,11,.8)','rgba(167,139,250,.8)'],
+               borderColor:'#0e1c30',borderWidth:2}]},
+    {plugins:{legend:{position:'bottom',labels:{color:'#4d6a8a',font:{size:11}}}}})
+
+  const {data:sc2}=await sb.from('scans').select('scan_time,nifty50_score,banknifty_score,sensex_score')
+    .order('created_at',{ascending:false}).limit(60)
+  if(sc2?.length){
+    const r=[...sc2].reverse()
+    mkChart('ch4','line',{labels:r.map(s=>s.scan_time||''),datasets:[
+      {label:'NIFTY50',  data:r.map(s=>s.nifty50_score),  borderColor:'#3b82f6',fill:false,tension:.4,pointRadius:2,borderWidth:2},
+      {label:'BANKNIFTY',data:r.map(s=>s.banknifty_score),borderColor:'#10b981',fill:false,tension:.4,pointRadius:2,borderWidth:2},
+      {label:'SENSEX',   data:r.map(s=>s.sensex_score),   borderColor:'#f59e0b',fill:false,tension:.4,pointRadius:2,borderWidth:2},
+    ]},{scales:{y:{min:0,max:100},x:{ticks:{maxTicksLimit:12}}}})
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SCAN LOG TAB
+═══════════════════════════════════════════════════════════════════ */
+async function loadScans(){
+  if(!sb) return
+  const d=document.getElementById('sld').value||today()
+  const {data}=await sb.from('scans').select('*').eq('scan_date',d).order('created_at',{ascending:false})
+  const rows=data||[]
+  document.getElementById('slcnt').textContent=`${rows.length} scans`
+  const tb=document.getElementById('sltb')
+  if(!rows.length){
+    tb.innerHTML='<tr><td colspan="9"><div class="empty"><div class="empty-icon">📋</div><div class="empty-text">No scans on this date</div></div></td></tr>'
+    return
+  }
+  const ms=(sc2,dr)=>{
+    if(sc2==null) return '—'
+    const d=dr==='CALL'?'c':'p', p=Math.min(100,Math.max(0,sc2))
+    return `<div class="scell">
+      <div class="scell-b"><div class="scell-f" style="width:${p}%;background:${scoreBarGradient(sc2)}"></div></div>
+      <span style="color:${scoreColor(sc2)};font-weight:700">${sc2}</span>
+      <span class="dbadge ${d}" style="font-size:10px;padding:1px 6px">${dr==='CALL'?'▲':'▼'}</span>
+    </div>`
+  }
+  tb.innerHTML=rows.map(r=>`<tr>
+    <td style="color:var(--muted);font-size:12px">#${r.scan_number||'—'}</td>
+    <td style="color:var(--muted2);font-size:12px">${r.scan_date||'—'}</td>
+    <td style="color:var(--muted2)">${r.scan_time||'—'}</td>
+    <td>${ms(r.nifty50_score,  r.nifty50_dir)}</td>
+    <td>${ms(r.banknifty_score,r.banknifty_dir)}</td>
+    <td>${ms(r.sensex_score,   r.sensex_dir)}</td>
+    <td style="color:var(--muted2)">${r.vix?Number(r.vix).toFixed(1):'—'}</td>
+    <td style="color:var(--muted2)">${r.pcr?Number(r.pcr).toFixed(2):'—'}</td>
+    <td>${r.signals_count>0?`<span style="color:var(--call);font-weight:700">${r.signals_count} 🔔</span>`:'<span style="color:var(--muted)">—</span>'}</td>
+  </tr>`).join('')
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   REAL-TIME SUBSCRIPTIONS
+═══════════════════════════════════════════════════════════════════ */
+function startRealtime(){
+  if(!sb) return
+  sb.channel('live')
+    .on('postgres_changes',{event:'UPDATE',schema:'public',table:'bot_status'},
+        ({new:r})=>setStatus(r))
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'scans'},
+        ({new:r})=>{
+          setScan(r)
+          if(document.getElementById('p-scanlog').classList.contains('active')) loadScans()
+        })
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'signals'},
+        ({new:r})=>{
+          toast(r)
+          if(document.getElementById('p-live').classList.contains('active')) loadTodaySigs()
+          if(document.getElementById('p-signals').classList.contains('active')) loadSigs(_sigF)
+        })
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'stock_signals'},
+        ({new:r})=>{
+          toastStock(r)
+          if(document.getElementById('p-stocks').classList.contains('active')) loadStocks()
+        })
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'stock_scans'},
+        ({new:r})=>{
+          updateStockStatus(r)
+          if(document.getElementById('p-stocks').classList.contains('active')) loadStockScans()
+        })
+    .subscribe()
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   BOOT
+═══════════════════════════════════════════════════════════════════ */
+async function loadTodaySigs(){
+  if(!sb) return
+  const {data}=await sb.from('signals').select('*').eq('signal_date',today()).order('created_at',{ascending:false})
+  renderLatest(data||[])
+}
+
+async function boot(){
+  updateMarketStatus()
+  setInterval(updateMarketStatus, 60000)
+  if(!sb) return
+  const [{data:bs},{data:sc3}]=await Promise.all([
+    sb.from('bot_status').select('*').eq('id',1).single(),
+    sb.from('scans').select('*').order('created_at',{ascending:false}).limit(1)
+  ])
+  if(bs) setStatus(bs)
+  if(sc3?.[0]) setScan(sc3[0])
+  await loadTodaySigs()
+  startRealtime()
+}
+document.addEventListener('DOMContentLoaded', boot)
 </script>
 </body>
 </html>
