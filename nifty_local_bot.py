@@ -55,6 +55,11 @@ MAX_TRADES_DAY  = 6
 HEARTBEAT_SCANS = 12      # send alive ping every N scans (~60 min)
 RESIGAL_GAP_MIN = 30      # minutes before re-alerting same instrument
 
+# ── 1-min entry confirmation (for unattended / hands-free trading) ─
+CONFIRM_TIMEOUT_MIN = 3   # max minutes to wait for 1-min confirmation
+CONFIRM_CHECKS_MIN  = 3   # checks needed out of 4 (raise = stricter)
+SKIP_UNCONFIRMED    = True # True = skip signal if no confirmation in time
+
 INSTRUMENTS = {
     "NIFTY50":   {"ticker": "^NSEI",    "sl_pts": 40,  "lot_size": 25, "strike_step": 50,  "min_score": 75},
     "BANKNIFTY": {"ticker": "^NSEBANK", "sl_pts": 120, "lot_size": 15, "strike_step": 100, "min_score": 75},
@@ -654,104 +659,170 @@ def fetch_1min_ohlcv(ticker: str) -> Optional[pd.DataFrame]:
 
 def confirm_1min_entry(sig: dict) -> dict:
     """
-    After a 5-min STRONG/ULTRA signal, look at the last 5 x 1-min candles
-    and score entry quality across 4 checks.
+    Score the last 5 x 1-min candles across 5 checks.
+    Caller decides the pass threshold (CONFIRM_CHECKS_MIN).
+
+    Checks:
+        ① Candle body direction agrees with signal
+        ② 1-min Volume Delta bias agrees
+        ③ Price above/below 1-min VWAP
+        ④ EMA-9 slope direction agrees
+        ⑤ Volume spike on last candle (>1.3× recent average)
 
     Returns:
-        confirmed     : True if ≥ 2 of 4 checks pass
-        checks_met    : int 0-4
-        entry_label   : 'ENTER NOW' | 'WAIT PULLBACK' | 'NO DATA'
-        tight_sl      : tighter SL based on 1-min candle wick (or None)
+        confirmed     : True if checks_met >= CONFIRM_CHECKS_MIN
+        checks_met    : int 0-5
+        total_checks  : 5
+        entry_price   : current LTP at time of check
+        tight_sl      : 1-min wick SL (always computed, never None if data ok)
         tight_sl_pts  : SL distance in pts
-        pullback_to   : suggested limit-entry price if not confirmed
-        reason        : human-readable check breakdown
-        vol_delta_1m  : 1-min volume delta dict
+        tight_target  : tight_sl_pts * 3 target
+        reason        : human-readable check list
+        vol_delta_1m  : full volume delta dict
+        timed_out     : False (set to True externally on timeout)
     """
     base = {
-        "confirmed": False, "checks_met": 0, "entry_label": "NO DATA",
-        "tight_sl": None, "tight_sl_pts": None,
-        "pullback_to": None, "reason": "No 1-min data available",
-        "vol_delta_1m": {}
+        "confirmed": False, "checks_met": 0, "total_checks": 5,
+        "entry_label": "NO DATA", "entry_price": sig["ltp"],
+        "tight_sl": None, "tight_sl_pts": None, "tight_target": None,
+        "reason": "No 1-min data available",
+        "vol_delta_1m": {}, "timed_out": False,
     }
 
     df1 = fetch_1min_ohlcv(sig["ticker"])
     if df1 is None or len(df1) < 3:
-        base["reason"] = "1-min feed unavailable (NSE/yfinance)"
+        base["reason"] = "1-min feed unavailable"
         return base
 
-    recent = df1.tail(5).copy()
+    recent    = df1.tail(5).copy()
     direction = sig["direction"]
     ltp_now   = float(recent["Close"].iloc[-1])
     last_c    = recent.iloc[-1]
+    checks    = {}
 
-    checks = {}
-
-    # ① Candle direction — last 1-min candle body must agree
-    candle_bull = last_c["Close"] > last_c["Open"]
-    checks["Candle dir"] = (
-        (candle_bull and direction == "CALL") or
+    # ① Candle body in direction
+    candle_bull = float(last_c["Close"]) > float(last_c["Open"])
+    checks["① Candle body"] = (
+        (candle_bull  and direction == "CALL") or
         (not candle_bull and direction == "PUT")
     )
 
-    # ② 1-min Volume Delta — buy/sell pressure on recent candles
+    # ② 1-min Volume Delta
     vd1 = calc_volume_delta(recent)
-    checks["Vol Δ"] = (
+    checks["② Vol Δ bias"] = (
         (vd1["bias"] == "BULL" and direction == "CALL") or
         (vd1["bias"] == "BEAR" and direction == "PUT")
     )
 
     # ③ Price vs 1-min VWAP
     vwap1 = calc_vwap(recent)
-    checks["VWAP 1m"] = (
+    checks["③ VWAP 1m"] = (
         (ltp_now > vwap1 and direction == "CALL") or
         (ltp_now < vwap1 and direction == "PUT")
     )
 
-    # ④ EMA-9 slope on 1-min (last 2 values)
-    ema9_1m = calc_ema(recent["Close"], min(9, len(recent)))
+    # ④ EMA-9 slope
+    ema9_1m  = calc_ema(recent["Close"], min(9, len(recent)))
     slope_up = float(ema9_1m.iloc[-1]) > float(ema9_1m.iloc[-2])
-    checks["EMA9 slope"] = (
-        (slope_up and direction == "CALL") or
+    checks["④ EMA9 slope"] = (
+        (slope_up     and direction == "CALL") or
         (not slope_up and direction == "PUT")
     )
 
-    checks_met = sum(checks.values())
-    confirmed  = checks_met >= 2
-
-    # ── Tight SL from 1-min wick ──────────────────────────────────
-    tight_sl = tight_sl_pts = None
-    if direction == "CALL":
-        wick_sl = round(float(recent["Low"].min()) - 5, 1)
-        pts = round(ltp_now - wick_sl, 1)
+    # ⑤ Volume spike — last 1-min candle volume > 1.3× average of prior candles
+    if len(recent) >= 3:
+        avg_vol  = float(recent["Volume"].iloc[:-1].mean()) or 1
+        last_vol = float(recent["Volume"].iloc[-1])
+        checks["⑤ Vol spike"] = last_vol > avg_vol * 1.3
     else:
-        wick_sl = round(float(recent["High"].max()) + 5, 1)
-        pts = round(wick_sl - ltp_now, 1)
-    # Only suggest if genuinely tighter (< 70% of 5-min SL)
-    if pts < sig["sl_pts"] * 0.70 and pts > 0:
-        tight_sl, tight_sl_pts = wick_sl, pts
+        checks["⑤ Vol spike"] = False
 
-    # ── Pullback entry suggestion if not confirmed ─────────────────
-    pullback_to = None
-    if not confirmed:
-        if direction == "CALL":
-            pullback_to = round(max(vwap1, sig["vwap"]) - 2, 1)
-        else:
-            pullback_to = round(min(vwap1, sig["vwap"]) + 2, 1)
+    checks_met = sum(checks.values())
+    confirmed  = checks_met >= CONFIRM_CHECKS_MIN
 
-    # ── Human-readable check breakdown ────────────────────────────
-    parts = [f"{'✅' if v else '❌'} {k}" for k, v in checks.items()]
-    entry_label = "ENTER NOW" if confirmed else "WAIT PULLBACK"
+    # ── 1-min wick SL (always compute when data available) ─────────
+    buffer = round(sig["ltp"] * 0.0005, 1)   # 0.05% buffer
+    if direction == "CALL":
+        wick_sl  = round(float(recent["Low"].min()) - buffer, 1)
+        sl_pts   = round(ltp_now - wick_sl, 1)
+        tgt      = round(ltp_now + sl_pts * 3, 1)
+    else:
+        wick_sl  = round(float(recent["High"].max()) + buffer, 1)
+        sl_pts   = round(wick_sl - ltp_now, 1)
+        tgt      = round(ltp_now - sl_pts * 3, 1)
+    # Sanity: must be positive and not wider than 5-min SL
+    if 0 < sl_pts <= sig["sl_pts"] * 1.2:
+        tight_sl, tight_sl_pts, tight_tgt = wick_sl, sl_pts, tgt
+    else:
+        tight_sl = tight_sl_pts = tight_tgt = None
+
+    parts       = [f"{'✅' if v else '❌'} {k}" for k, v in checks.items()]
+    entry_label = "✅ CONFIRMED — ENTER NOW" if confirmed else "⏳ NOT YET — WAITING"
 
     return {
         "confirmed":    confirmed,
         "checks_met":   checks_met,
+        "total_checks": 5,
         "entry_label":  entry_label,
+        "entry_price":  ltp_now,
         "tight_sl":     tight_sl,
         "tight_sl_pts": tight_sl_pts,
-        "pullback_to":  pullback_to,
-        "reason":       " | ".join(parts),
+        "tight_target": tight_tgt,
+        "reason":       "\n  ".join(parts),
         "vol_delta_1m": vd1,
+        "timed_out":    False,
     }
+
+
+def wait_for_1min_confirm(sig: dict) -> dict:
+    """
+    Polls confirm_1min_entry every 30 s for up to CONFIRM_TIMEOUT_MIN minutes.
+    Returns as soon as CONFIRM_CHECKS_MIN/5 checks pass, or on timeout.
+    Sends a 'pending' notice to the scan bot at the start.
+    """
+    direction = sig["direction"]
+    instr     = sig["instrument"]
+    score     = sig["score"]
+    deadline  = datetime.now(IST) + timedelta(minutes=CONFIRM_TIMEOUT_MIN)
+
+    send_scan_tg(
+        f"⏳ *{instr}* {direction} Score {score} — "
+        f"waiting up to {CONFIRM_TIMEOUT_MIN}m for 1-min confirmation\n"
+        f"Need {CONFIRM_CHECKS_MIN}/5 checks to fire trade alert."
+    )
+    print(f"  [CONFIRM] Waiting up to {CONFIRM_TIMEOUT_MIN}m …")
+
+    attempt = 0
+    last_ec = None
+    while datetime.now(IST) < deadline:
+        attempt += 1
+        ec = confirm_1min_entry(sig)
+        last_ec = ec
+        print(f"    [1MIN #{attempt}] {ec['checks_met']}/5  {ec['reason'].replace(chr(10),' | ')}")
+
+        if ec["confirmed"]:
+            ec["timed_out"] = False
+            return ec
+
+        remaining = (deadline - datetime.now(IST)).total_seconds()
+        if remaining > 30:
+            time.sleep(30)
+        else:
+            break   # < 30 s left — do one last check outside loop
+
+    # Final check right at deadline
+    ec = confirm_1min_entry(sig)
+    if ec["confirmed"]:
+        ec["timed_out"] = False
+        return ec
+
+    # Timeout
+    if last_ec is None:
+        last_ec = ec
+    last_ec["timed_out"]    = True
+    last_ec["entry_label"]  = "⛔ TIMEOUT — SIGNAL SKIPPED"
+    last_ec["confirmed"]    = False
+    return last_ec
 
 def get_orb(df_today):
     if df_today.empty: return 0.0, 0.0
@@ -1188,42 +1259,51 @@ def format_signal(sig):
 
     # ── 1-min Entry Confirmation block ──────────────────────────────
     ec = sig.get("entry_confirm")
-    if ec:
-        el_icon = "🟢" if ec["confirmed"] else "🟡"
-        ec_block = (
-            f"\n\n⏱ *1-Min Entry Confirmation:* {el_icon} *{ec['entry_label']}*"
-            f"  ({ec['checks_met']}/4 checks)\n"
-            f"  {ec['reason']}\n"
-        )
-        if ec["tight_sl"] is not None:
-            ec_block += (
-                f"  🎯 Tight SL   : {ec['tight_sl']:,.1f}  "
-                f"(−{ec['tight_sl_pts']} pts vs 5m −{sig['sl_pts']} pts)\n"
-                f"  📈 Tight Target: {round(sig['ltp'] + ec['tight_sl_pts']*3, 1):,.1f}  "
-                f"(+{round(ec['tight_sl_pts']*3,1)} pts  R:R 1:3)\n"
-            )
-        if ec["pullback_to"] is not None:
-            ec_block += f"  ⏳ Wait for pullback to ≈ {ec['pullback_to']:,.1f}\n"
+    if ec and not ec.get("timed_out"):
+        # Confirmed entry — show exact levels at top
+        tsl   = ec.get("tight_sl")
+        tspts = ec.get("tight_sl_pts")
+        ttgt  = ec.get("tight_target")
+        ep    = ec.get("entry_price", sig["ltp"])
+
+        ec_block = f"\n\n{'═'*32}\n"
+        ec_block += f"🚀 *ACTION: {sig['direction']} NOW*\n"
+        ec_block += f"{'═'*32}\n"
+        ec_block += f"  📥 Entry  : *{ep:,.1f}*\n"
+        if tsl and tspts and ttgt:
+            ec_block += f"  🛑 SL     : *{tsl:,.1f}*  (−{tspts} pts)\n"
+            ec_block += f"  🎯 Target : *{ttgt:,.1f}*  (+{round(tspts*3,1)} pts)\n"
+            ec_block += f"  ⚖️ R:R    : 1:3\n"
+        else:
+            ec_block += f"  🛑 SL     : *{sig['sl_level']:,.1f}*  (−{sig['sl_pts']} pts)\n"
+            ec_block += f"  🎯 Target : *{sig['target_level']:,.1f}*  (+{sig['target_pts']} pts)\n"
+            ec_block += f"  ⚖️ R:R    : 1:3\n"
+        ec_block += f"{'─'*32}\n"
+        ec_block += f"⏱ *1-Min Gate:* ✅ {ec['checks_met']}/5 checks passed\n"
+        ec_block += f"  {ec['reason']}\n"
         vd1 = ec.get("vol_delta_1m", {})
         if vd1.get("buy_vol", 0) + vd1.get("sell_vol", 0) > 0:
             ec_block += (
-                f"  📊 1m Δ Vol : {vd1['bias']} {vd1['delta_pct']:+.1f}% "
+                f"  📊 1m Δ: {vd1['bias']} {vd1['delta_pct']:+.1f}% "
                 f"(B:{vd1['buy_vol']:,} / S:{vd1['sell_vol']:,})\n"
             )
+    elif ec and ec.get("timed_out"):
+        # Should not reach format_signal on timeout+SKIP, but handle gracefully
+        ec_block = (
+            f"\n\n⛔ *1-Min Gate: TIMED OUT* ({ec['checks_met']}/5 checks)\n"
+            f"  {ec['reason']}\n"
+        )
     else:
-        ec_block = ""
+        ec_block = ""   # MEDIUM signal — no 1-min gate
 
     return (
         f"{ri} *{sig['instrument']} — {d_icon} | {sig['rating']}*\n"
-        f"📅 {datetime.now(IST).strftime('%d %b %Y %H:%M IST')}\n\n"
-        f"💰 *LTP:* {sig['ltp']:,.1f}\n"
+        f"📅 {datetime.now(IST).strftime('%d %b %Y %H:%M IST')}\n"
+        # ── ACTION block first — visible without scrolling ──────────
+        + ec_block +
+        f"\n💰 *LTP:* {sig['ltp']:,.1f}\n"
         f"🎫 *Strike:* {sig['strike']} {sig['option_type']}\n"
-        f"📊 *Score:* {sig['score']}/100 ({sig['conds_met']}/8 conditions)\n"
-        f"⚖️ *R:R:* {sig['rr']}\n\n"
-        f"📍 *Trade Levels:*\n"
-        f"  Entry  : {sig['ltp']:,.1f}\n"
-        f"  SL     : {sig['sl_level']:,.1f}  (−{sig['sl_pts']} pts)\n"
-        f"  Target : {sig['target_level']:,.1f}  (+{sig['target_pts']} pts)\n\n"
+        f"📊 *Score:* {sig['score']}/100 ({sig['conds_met']}/8 conditions)\n\n"
         f"📈 *Indicators:*\n"
         f"  EMA9/21 : {sig['e9']:,.0f} / {sig['e21']:,.0f}\n"
         f"  VWAP    : {sig['vwap']:,.1f}\n"
@@ -1234,8 +1314,7 @@ def format_signal(sig):
         f"  CPR     : {cpr['bottom']:,.1f}–{cpr['top']:,.1f} "
         f"({'Narrow 📈' if cpr['narrow'] else 'Wide 📉'})\n\n"
         f"🔢 *Fib:* {sig['fib_label']}\n"
-        + (order_flow_block if order_flow_block else "")
-        + ec_block +
+        + (order_flow_block if order_flow_block else "") +
         f"\n\n📋 *Conditions:*\n" + "\n".join(clines) +
         f"\n\n⚠️ _Trade at your own risk._"
     )
@@ -1346,20 +1425,39 @@ def scan():
                             last["direction"] == sig["direction"] and
                             sig["score"] < last["score"] + 10)
                 if not suppress:
-                    # ── 1-min entry confirmation (STRONG/ULTRA only) ──
+                    # ── 1-min entry confirmation gate ─────────────────
                     if sig["score"] >= SCORE_STRONG:
-                        ec = confirm_1min_entry(sig)
+                        ec = wait_for_1min_confirm(sig)
                         sig["entry_confirm"] = ec
-                        print(f"      [1MIN] {ec['entry_label']} "
-                              f"({ec['checks_met']}/4) {ec['reason']}")
+
+                        if ec["timed_out"] and SKIP_UNCONFIRMED:
+                            # No clean entry found — don't trade
+                            send_scan_tg(
+                                f"⛔ *{name}* {sig['direction']} Score {sig['score']} "
+                                f"— 1-min never confirmed in {CONFIRM_TIMEOUT_MIN}m "
+                                f"({ec['checks_met']}/5 checks). Signal skipped."
+                            )
+                            print(f"      ⛔ SKIPPED (no 1-min confirm)")
+                            results.append((name, sig, sig["rating"], sig["score"], False))
+                            continue   # don't fire trade alert
+
                     else:
-                        sig["entry_confirm"] = None
+                        sig["entry_confirm"] = None   # MEDIUM — no 1-min gate
+
+                    # ── Signal confirmed (or MEDIUM) — fire trade alert ──
                     send_signal_tg(format_signal(sig))
                     log_excel(sig)
                     sb_push_signal(sig)
+                    ec = sig.get("entry_confirm") or {}
+                    tsl  = ec.get("tight_sl_pts")
+                    tgt  = ec.get("tight_target")
+                    desk_body = (
+                        f"LTP {sig['ltp']:,.0f} | Score {sig['score']} | "
+                        f"SL {ec.get('tight_sl', sig['sl_level']):,.0f} "
+                        f"→ T {tgt if tgt else sig['target_level']:,.0f}"
+                    )
                     send_desktop(f"{name} {sig['direction']} {sig['rating']}",
-                                 f"LTP {sig['ltp']:,.0f} | Score {sig['score']} | "
-                                 f"SL {sig['sl_level']:,.0f} → T {sig['target_level']:,.0f}",
+                                 desk_body,
                                  urgent=(sig["score"] >= SCORE_ULTRA))
                     state["last_signal"][name] = {
                         "direction": sig["direction"], "score": sig["score"], "time": now}
