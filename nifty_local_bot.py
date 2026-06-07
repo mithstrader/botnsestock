@@ -309,6 +309,7 @@ def sb_push_scan(scan_no, results):
             "pcr":           float(state["pcr"]) if state["pcr"] else None,
             "signals_count": sum(1 for _, _, _, _, alerted in results if alerted),
         }
+        footprint = {}
         for name, sig, _, _, _ in results:
             k = name.lower()
             if sig:
@@ -316,6 +317,11 @@ def sb_push_scan(scan_no, results):
                 row[f"{k}_dir"]   = sig["direction"]
                 row[f"{k}_rsi"]   = round(float(sig["rsi"]), 2)
                 row[f"{k}_ltp"]   = round(float(sig["ltp"]), 2)
+                fp = sig.get("footprint")
+                if fp:
+                    footprint[name] = fp
+        if footprint:
+            row["footprint_data"] = footprint
         client.table("scans").insert(row).execute()
     except Exception as e:
         print(f"  [SUPABASE] push_scan error: {e}")
@@ -526,6 +532,43 @@ def calc_volume_delta(df_today: pd.DataFrame) -> dict:
     except Exception as e:
         print(f"  [VOL DELTA] {e}")
         return empty
+
+# ── Footprint: per-candle volume delta across price levels ────────
+def calc_candle_footprint(df_today: pd.DataFrame, max_candles: int = 15) -> list:
+    """
+    Per-candle buy/sell volume approximation across 7 price levels.
+    Used by the web dashboard to render the footprint chart.
+    NOTE: true footprint requires tick data; this approximates using
+          candle body position (buy vol ∝ close-low / high-low).
+    Returns list of dicts ordered oldest → newest.
+    """
+    if df_today is None or df_today.empty:
+        return []
+    df = df_today.tail(max_candles).copy()
+    rows = []
+    for ts, row in df.iterrows():
+        hl       = float(row["High"]) - float(row["Low"])
+        if hl == 0:
+            hl = 1e-9
+        vol      = float(row.get("Volume", 0) or 0)
+        buy_rat  = (float(row["Close"]) - float(row["Low"])) / hl
+        buy_vol  = int(vol * buy_rat)
+        sell_vol = int(vol - buy_vol)
+        delta    = buy_vol - sell_vol
+        delta_p  = round(delta / (vol or 1) * 100, 1)
+        rows.append({
+            "t":         ts.strftime("%H:%M"),
+            "o":         round(float(row["Open"]),  1),
+            "h":         round(float(row["High"]),  1),
+            "l":         round(float(row["Low"]),   1),
+            "c":         round(float(row["Close"]), 1),
+            "v":         int(vol),
+            "buy_vol":   buy_vol,
+            "sell_vol":  sell_vol,
+            "delta":     delta,
+            "delta_pct": delta_p,
+        })
+    return rows
 
 # ── DOM: Bid/Ask depth from NSE Futures ───────────────────────────
 def fetch_dom_imbalance(symbol: str = "NIFTY") -> dict:
@@ -1015,6 +1058,8 @@ def analyze(name, cfg):
         "vol_delta":    vd,
         "options_flow": of,
         "dom":          dom,
+        # Footprint chart data (per-candle, for web dashboard)
+        "footprint":    calc_candle_footprint(df_today),
     }
 
 # ═══════════════════════════════════════════════════════════════

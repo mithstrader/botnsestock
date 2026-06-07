@@ -323,6 +323,24 @@ td{padding:10px 14px;white-space:nowrap;vertical-align:middle}
 .ctitle{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:16px}
 .ccard canvas{max-height:220px}
 
+/* ── Footprint tab ──────────────────────────────────────────────── */
+.fp-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px}
+.fp-instr{display:flex;gap:8px}
+.fp-ibtn{background:var(--surf2);border:1px solid var(--border);color:var(--muted2);padding:6px 18px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;transition:all .2s;letter-spacing:.03em}
+.fp-ibtn.active,.fp-ibtn:hover{background:var(--accent);border-color:var(--accent);color:#fff}
+.fp-legend{display:flex;gap:16px;flex-wrap:wrap}
+.fp-leg{font-size:11px;display:flex;align-items:center;gap:4px;color:var(--muted2)}
+.fp-leg .dot{width:10px;height:10px;border-radius:2px;display:inline-block}
+.fp-leg.buy .dot{background:#10b981}.fp-leg.sell .dot{background:#f43f5e}
+.fp-leg.imb .dot{background:#f97316}.fp-leg.body .dot{background:rgba(100,160,255,.25)}
+.fp-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:16px}
+.fp-stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px}
+.fp-stat-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+.fp-stat-val{font-size:20px;font-weight:800;line-height:1}
+.fp-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius2);overflow:hidden;position:relative}
+.fp-note{font-size:11px;color:var(--muted);margin-top:12px;padding:10px 14px;background:var(--surf2);border-radius:8px;border-left:3px solid var(--accent)}
+#fp-canvas{display:block;width:100%}
+
 /* ── Toast ──────────────────────────────────────────────────────── */
 #toasts{position:fixed;top:110px;right:18px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none;max-width:320px}
 .toast{
@@ -401,6 +419,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   <button class="tbtn" data-tab="stocks">📈 Stocks</button>
   <button class="tbtn" data-tab="signals">📢 Signals</button>
   <button class="tbtn" data-tab="analytics">📊 Analytics</button>
+  <button class="tbtn" data-tab="footprint">🦶 Footprint</button>
   <button class="tbtn" data-tab="scanlog">🔍 Scan Log</button>
 </div>
 
@@ -574,6 +593,48 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   </div>
 </div>
 
+<!-- ══════ FOOTPRINT ══════════════════════════════════════════════ -->
+<div id="p-footprint" class="panel">
+
+  <div class="fp-toolbar">
+    <div class="fp-instr">
+      <button class="fp-ibtn active" data-instr="NIFTY50">NIFTY 50</button>
+      <button class="fp-ibtn" data-instr="BANKNIFTY">BANKNIFTY</button>
+      <button class="fp-ibtn" data-instr="SENSEX">SENSEX</button>
+    </div>
+    <div class="fp-legend">
+      <span class="fp-leg buy"><span class="dot"></span>Buy Vol</span>
+      <span class="fp-leg sell"><span class="dot"></span>Sell Vol</span>
+      <span class="fp-leg imb"><span class="dot"></span>Imbalance ≥2×</span>
+      <span class="fp-leg body"><span class="dot"></span>Candle Body</span>
+    </div>
+  </div>
+
+  <div class="fp-stats" id="fp-stats">
+    <div class="fp-stat"><div class="fp-stat-lbl">Cum. Delta</div><div class="fp-stat-val" id="fps-cum">—</div></div>
+    <div class="fp-stat"><div class="fp-stat-lbl">Last Candle Δ</div><div class="fp-stat-val" id="fps-last">—</div></div>
+    <div class="fp-stat"><div class="fp-stat-lbl">Bull Candles</div><div class="fp-stat-val" id="fps-bull" style="color:var(--call)">—</div></div>
+    <div class="fp-stat"><div class="fp-stat-lbl">Bear Candles</div><div class="fp-stat-val" id="fps-bear" style="color:var(--put)">—</div></div>
+    <div class="fp-stat"><div class="fp-stat-lbl">Dominance</div><div class="fp-stat-val" id="fps-dom">—</div></div>
+  </div>
+
+  <div class="fp-wrap">
+    <canvas id="fp-canvas" height="480"></canvas>
+    <div id="fp-empty" class="empty" style="display:none;padding:60px 0">
+      <div class="empty-icon">📊</div>
+      <div class="empty-text">Waiting for bot scan data</div>
+      <div class="empty-sub" style="font-size:12px;color:var(--muted);margin-top:6px">
+        Footprint data is pushed after each 5-min scan during market hours
+      </div>
+    </div>
+  </div>
+
+  <div class="fp-note">
+    ⚠️ <b>Approximated footprint</b> — buy/sell volume per price level is estimated from OHLCV candle body position
+    (true footprint requires broker tick data). Delta values are accurate; level distribution is indicative.
+  </div>
+</div>
+
 <!-- ══════ SCAN LOG ═══════════════════════════════════════════════ -->
 <div id="p-scanlog" class="panel">
   <div class="frow">
@@ -650,6 +711,7 @@ document.querySelectorAll('.tbtn').forEach(b=>b.addEventListener('click',()=>{
   if(t==='analytics') loadAnalytics()
   if(t==='scanlog')   loadScans()
   if(t==='stocks')    loadStocks()
+  if(t==='footprint') loadFootprint()
 }))
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1187,6 +1249,11 @@ function startRealtime(){
         ({new:r})=>{
           setScan(r)
           if(document.getElementById('p-scanlog').classList.contains('active')) loadScans()
+          // Update footprint data from real-time payload
+          if(r.footprint_data){
+            _fpData = r.footprint_data
+            if(document.getElementById('p-footprint').classList.contains('active')) renderFootprint()
+          }
         })
     .on('postgres_changes',{event:'INSERT',schema:'public',table:'signals'},
         ({new:r})=>{
@@ -1206,6 +1273,238 @@ function startRealtime(){
         })
     .subscribe()
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   FOOTPRINT CHART
+═══════════════════════════════════════════════════════════════════ */
+let _fpInstr = 'NIFTY50'
+let _fpData  = {}   // { NIFTY50:[...candles], BANKNIFTY:[...], SENSEX:[...] }
+
+/* Shorten large numbers */
+function fpNum(n){ return n>=1e6?(n/1e6).toFixed(1)+'M':n>=1000?(n/1000).toFixed(0)+'K':String(n) }
+
+/* Distribute buy/sell volume across N price levels within a candle.
+   Uses triangular model: bullish candles = buy heavier near top, sell near bottom. */
+function distributeVolume(c, N=7){
+  const bull = c.c >= c.o
+  const range = c.h - c.l || 0.01
+  const lvSz  = range / N
+  const bW=[], sW=[]
+  for(let i=0;i<N;i++){
+    const pos = N>1 ? i/(N-1) : 0.5
+    bW.push(bull ? 0.35+0.65*pos        : 0.35+0.65*(1-pos))
+    sW.push(bull ? 0.35+0.65*(1-pos)    : 0.35+0.65*pos)
+  }
+  const bS=bW.reduce((a,b)=>a+b,0)||1, sS=sW.reduce((a,b)=>a+b,0)||1
+  return Array.from({length:N},(_,i)=>({
+    pF: c.l + i*lvSz,
+    pT: c.l + (i+1)*lvSz,
+    buy:  Math.round((c.buy_vol||0)  * bW[i]/bS),
+    sell: Math.round((c.sell_vol||0) * sW[i]/sS),
+  }))
+}
+
+function drawFootprint(canvas, candles){
+  const ctx = canvas.getContext('2d')
+  const W=canvas.width, H=canvas.height
+  const ML=68, MR=14, MT=18, MB=68
+  const cW=W-ML-MR, cH=H-MT-MB
+
+  ctx.clearRect(0,0,W,H)
+  ctx.fillStyle='#0a1422'; ctx.fillRect(0,0,W,H)
+
+  if(!candles||!candles.length){
+    ctx.fillStyle='#4d6a8a'; ctx.font='14px sans-serif'; ctx.textAlign='center'
+    ctx.fillText('No footprint data — run the bot during market hours', W/2, H/2)
+    return
+  }
+
+  const pMax = Math.max(...candles.map(c=>c.h))
+  const pMin = Math.min(...candles.map(c=>c.l))
+  const pRng = pMax - pMin || 1
+  const pPad = pRng * 0.05
+  const pHi  = pMax + pPad, pLo = pMin - pPad, pSpan = pHi - pLo
+  const p2y  = p => MT + (1-(p-pLo)/pSpan)*cH
+
+  /* price axis */
+  const step = Math.pow(10, Math.floor(Math.log10(pRng)))/2
+  ctx.fillStyle='#3d5a78'; ctx.font='9px sans-serif'; ctx.textAlign='right'
+  for(let p=Math.ceil(pLo/step)*step; p<=pHi; p+=step){
+    const y=p2y(p)
+    if(y<MT-2||y>MT+cH+2) continue
+    ctx.fillText(Math.round(p).toLocaleString('en-IN'), ML-5, y+3)
+    ctx.strokeStyle='rgba(100,160,255,0.04)'; ctx.lineWidth=0.5
+    ctx.beginPath(); ctx.moveTo(ML,y); ctx.lineTo(W-MR,y); ctx.stroke()
+  }
+
+  const colW = cW / candles.length
+
+  candles.forEach((c,i)=>{
+    const x   = ML + i*colW
+    const cx  = x + colW/2
+    const bull= c.c >= c.o
+    const gC  = bull ? '#10b981' : '#f43f5e'
+    const gA  = bull ? 'rgba(16,185,129,' : 'rgba(244,63,94,'
+
+    /* column separator */
+    ctx.strokeStyle='rgba(100,160,255,0.05)'; ctx.lineWidth=0.5
+    ctx.beginPath(); ctx.moveTo(x,MT); ctx.lineTo(x,MT+cH); ctx.stroke()
+
+    /* price level rows */
+    const lvs = distributeVolume(c, 7)
+    const mLV = Math.max(...lvs.flatMap(lv=>[lv.buy,lv.sell]),1)
+    const half = colW/2 - 1.5
+
+    lvs.forEach(lv=>{
+      const rT = p2y(lv.pT), rB = p2y(lv.pF)
+      const rH = Math.max(rB-rT, 1.5)
+
+      /* candle-body band highlight */
+      const inBody = lv.pF < Math.max(c.o,c.c) && lv.pT > Math.min(c.o,c.c)
+      if(inBody){ ctx.fillStyle=gA+'0.11)'; ctx.fillRect(x,rT,colW,rH) }
+
+      /* imbalance highlight (one side ≥2× the other) */
+      const r = lv.buy/(lv.sell||0.1)
+      if(r>=2)        { ctx.fillStyle='rgba(16,185,129,0.17)'; ctx.fillRect(x,rT,colW,rH) }
+      else if(r<=0.5) { ctx.fillStyle='rgba(244,63,94,0.17)';  ctx.fillRect(x,rT,colW,rH) }
+
+      /* buy bar → fills left of centre */
+      const bW2 = Math.round(lv.buy/mLV*half)
+      if(bW2>0){ ctx.fillStyle='rgba(16,185,129,0.78)'; ctx.fillRect(cx-1-bW2,rT+0.5,bW2,rH-1) }
+
+      /* sell bar → fills right of centre */
+      const sW2 = Math.round(lv.sell/mLV*half)
+      if(sW2>0){ ctx.fillStyle='rgba(244,63,94,0.78)';  ctx.fillRect(cx+1,rT+0.5,sW2,rH-1) }
+
+      /* centre divider */
+      ctx.strokeStyle='rgba(100,160,255,0.07)'; ctx.lineWidth=0.5
+      ctx.beginPath(); ctx.moveTo(cx,rT); ctx.lineTo(cx,rB); ctx.stroke()
+
+      /* volume numbers — only when column is wide enough */
+      if(colW>55){
+        const mid=(rT+rB)/2+3
+        ctx.font=`${Math.min(8,Math.round(colW*0.1))}px sans-serif`
+        ctx.fillStyle='rgba(140,180,220,0.55)'
+        ctx.textAlign='right'
+        if(lv.buy>0)  ctx.fillText(fpNum(lv.buy), cx-3, mid)
+        ctx.textAlign='left'
+        if(lv.sell>0) ctx.fillText(fpNum(lv.sell), cx+3, mid)
+      }
+    })
+
+    /* wicks */
+    const bodyT=p2y(Math.max(c.o,c.c)), bodyB=p2y(Math.min(c.o,c.c))
+    ctx.strokeStyle=gC; ctx.lineWidth=1.5
+    ctx.beginPath(); ctx.moveTo(cx,p2y(c.h));  ctx.lineTo(cx,bodyT); ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(cx,bodyB); ctx.lineTo(cx,p2y(c.l));  ctx.stroke()
+
+    /* candle body outline */
+    ctx.strokeStyle=gA+'0.45)'; ctx.lineWidth=1
+    const bH=Math.max(bodyB-bodyT,1.5)
+    ctx.strokeRect(x+1, bodyT, colW-2, bH)
+
+    /* delta bar (below chart area) */
+    const dY   = MT+cH+4
+    const dPct = Math.min(Math.abs(c.delta_pct||0)/100,1)
+    const dBW  = Math.round(dPct*(colW-4))
+    ctx.fillStyle = c.delta>=0 ? 'rgba(16,185,129,0.85)' : 'rgba(244,63,94,0.85)'
+    ctx.fillRect(x+2, dY, dBW, 5)
+
+    /* delta % text */
+    ctx.fillStyle = c.delta>=0 ? '#10b981' : '#f43f5e'
+    ctx.font='bold 8px sans-serif'; ctx.textAlign='center'
+    ctx.fillText((c.delta>=0?'+':'')+(c.delta_pct?.toFixed(0)||0)+'%', cx, dY+16)
+
+    /* time label */
+    ctx.fillStyle='#4d6a8a'; ctx.font='8px sans-serif'; ctx.textAlign='center'
+    ctx.fillText(c.t, cx, MT+cH+30)
+
+    /* LTP price tag on last candle */
+    if(i===candles.length-1){
+      ctx.font='bold 10px sans-serif'
+      ctx.fillStyle=gA+'0.95)'; ctx.textAlign='left'
+      ctx.fillText(c.c.toLocaleString('en-IN'), x+colW+2, p2y(c.c)+3)
+    }
+  })
+
+  /* axes border */
+  ctx.strokeStyle='rgba(100,160,255,0.10)'; ctx.lineWidth=1
+  ctx.strokeRect(ML, MT, cW, cH)
+
+  /* legend: Buy | Sell header */
+  if(candles.length>0){
+    ctx.font='bold 9px sans-serif'; ctx.textAlign='center'
+    ctx.fillStyle='rgba(16,185,129,0.55)'; ctx.fillText('BUY ◀', ML+4, MT-5)
+    ctx.fillStyle='rgba(244,63,94,0.55)';  ctx.fillText('▶ SELL', W-MR-4, MT-5)
+  }
+}
+
+function updateFpStats(candles){
+  if(!candles?.length) return
+  const cum   = candles.reduce((a,c)=>a+c.delta,0)
+  const last  = candles[candles.length-1]
+  const bull  = candles.filter(c=>c.delta>0).length
+  const bear  = candles.filter(c=>c.delta<0).length
+  const domTxt= bull>=bear ? 'BUYER' : 'SELLER'
+  const bCol  = cum>=0 ? '#10b981' : '#f43f5e'
+  const lCol  = (last?.delta||0)>=0 ? '#10b981' : '#f43f5e'
+  const dCol  = bull>=bear ? '#10b981' : '#f43f5e'
+  document.getElementById('fps-cum').style.color=bCol
+  document.getElementById('fps-cum').textContent=(cum>=0?'+':'')+fpNum(Math.abs(cum))+' '+(cum>=0?'BULL':'BEAR')
+  document.getElementById('fps-last').style.color=lCol
+  document.getElementById('fps-last').textContent=(last?.delta>=0?'+':'')+((last?.delta_pct)||0).toFixed(1)+'%'
+  document.getElementById('fps-bull').textContent=bull
+  document.getElementById('fps-bear').textContent=bear
+  document.getElementById('fps-dom').style.color=dCol
+  document.getElementById('fps-dom').textContent=domTxt
+}
+
+function renderFootprint(){
+  const candles = _fpData[_fpInstr] || []
+  const canvas  = document.getElementById('fp-canvas')
+  const empty   = document.getElementById('fp-empty')
+  if(!canvas) return
+
+  /* responsive width */
+  const W = canvas.parentElement.clientWidth || 900
+  const H = Math.max(420, Math.min(580, Math.round(W*0.52)))
+  canvas.width=W; canvas.height=H
+  canvas.style.height=H+'px'
+
+  if(!candles.length){
+    canvas.style.display='none'; empty.style.display='flex'
+    ;['fps-cum','fps-last','fps-bull','fps-bear','fps-dom'].forEach(id=>{
+      document.getElementById(id).textContent='—'
+      document.getElementById(id).style.color=''
+    })
+    return
+  }
+  canvas.style.display='block'; empty.style.display='none'
+  drawFootprint(canvas, candles)
+  updateFpStats(candles)
+}
+
+async function loadFootprint(){
+  if(!sb) return
+  const {data}=await sb.from('scans')
+    .select('footprint_data')
+    .not('footprint_data','is',null)
+    .order('created_at',{ascending:false})
+    .limit(1)
+  if(data?.[0]?.footprint_data) _fpData = data[0].footprint_data
+  renderFootprint()
+}
+
+/* instrument selector buttons */
+document.querySelectorAll('.fp-ibtn').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('.fp-ibtn').forEach(x=>x.classList.remove('active'))
+  b.classList.add('active'); _fpInstr=b.dataset.instr; renderFootprint()
+}))
+
+/* redraw on resize */
+window.addEventListener('resize',()=>{
+  if(document.getElementById('p-footprint')?.classList.contains('active')) renderFootprint()
+})
 
 /* ═══════════════════════════════════════════════════════════════════
    BOOT

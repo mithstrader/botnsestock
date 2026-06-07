@@ -67,8 +67,12 @@ CREATE TABLE IF NOT EXISTS scans (
   sensex_dir       TEXT,
   sensex_rsi       NUMERIC(6,2),
   sensex_ltp       NUMERIC(10,2),
-  signals_count    INT DEFAULT 0
+  signals_count    INT DEFAULT 0,
+  footprint_data   JSONB         -- per-candle volume delta for footprint chart
 );
+
+-- If table already exists, add the column:
+ALTER TABLE scans ADD COLUMN IF NOT EXISTS footprint_data JSONB;
 
 -- ── 3. bot_status (single-row upsert) ──────────────────────────
 CREATE TABLE IF NOT EXISTS bot_status (
