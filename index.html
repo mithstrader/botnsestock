@@ -128,6 +128,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   <button class="tbtn" data-tab="signals">📢 Signals</button>
   <button class="tbtn" data-tab="analytics">📊 Analytics</button>
   <button class="tbtn" data-tab="scanlog">🔍 Scan Log</button>
+  <button class="tbtn" data-tab="stocks">📈 Stocks</button>
 </div>
 
 <main>
@@ -252,6 +253,55 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
     </tr></thead><tbody id="sltb"><tr><td colspan="9" class="load">Loading…</td></tr></tbody></table>
   </div>
 </div>
+
+<!-- ══════ STOCKS ════════════════════════════════════════════════ -->
+<div id="p-stocks" class="panel">
+  <div class="stats">
+    <div class="sc"><div class="sc-lbl">Stocks Scanned</div><div id="sk0" class="sc-val">—</div></div>
+    <div class="sc"><div class="sc-lbl">Signals Today</div><div id="sk1" class="sc-val">—</div></div>
+    <div class="sc"><div class="sc-lbl">Activity</div>       <div id="sk2" class="sc-val">—</div></div>
+    <div class="sc"><div class="sc-lbl">Session</div>        <div id="sk3" class="sc-val" style="font-size:13px">—</div></div>
+    <div class="sc"><div class="sc-lbl">Last Scan</div>      <div id="sk4" class="sc-val" style="font-size:13px">—</div></div>
+  </div>
+
+  <div class="stitle">Latest Stock Signals Today</div>
+  <div id="sk-lsigs"><div class="load">Loading…</div></div>
+
+  <div class="frow" style="margin-top:20px">
+    <select id="sk-fd"><option value="">All Directions</option><option>CALL</option><option>PUT</option></select>
+    <select id="sk-ft"><option value="">All Types</option><option value="NORMAL">Normal</option><option value="SPIKE">⚡ Spike</option><option value="REVERSAL">↩ Reversal</option></select>
+    <input type="date" id="sk-fdf"><input type="date" id="sk-fdt">
+    <button class="btn pri" onclick="stockSigApply()">Apply</button>
+    <button class="btn" onclick="stockSigClear()">Clear</button>
+    <span id="sk-cnt" class="info"></span>
+  </div>
+  <div class="twrap">
+    <table><thead><tr>
+      <th>Date</th><th>Time</th><th>Symbol</th><th>Dir</th><th>Type</th>
+      <th>Score</th><th>LTP</th><th>OI%</th><th>Vol%</th>
+      <th>DOM</th><th>Buildup</th><th>SL → Target</th><th>VIX</th>
+    </tr></thead><tbody id="sk-tb"><tr><td colspan="13" class="load">Loading…</td></tr></tbody></table>
+  </div>
+  <div style="display:flex;justify-content:center;align-items:center;gap:12px;margin-bottom:28px">
+    <button class="btn" id="sk-prev" onclick="stockGo(-1)">‹ Prev</button>
+    <span id="sk-pinfo" class="info"></span>
+    <button class="btn" id="sk-next" onclick="stockGo(1)">Next ›</button>
+  </div>
+
+  <div class="stitle">Stock Scan Log</div>
+  <div class="frow">
+    <input type="date" id="sk-sld">
+    <button class="btn pri" onclick="loadStockScans()">Filter</button>
+    <button class="btn" onclick="document.getElementById('sk-sld').value='';loadStockScans()">Today</button>
+    <span id="sk-slcnt" class="info"></span>
+  </div>
+  <div class="twrap">
+    <table><thead><tr>
+      <th>#</th><th>Time</th><th>Stocks</th><th>Activity</th>
+      <th>Session</th><th>Top Pick</th><th>Score</th><th>Alerts</th><th>VIX</th><th>PCR</th>
+    </tr></thead><tbody id="sk-sltb"><tr><td colspan="10" class="load">Loading…</td></tr></tbody></table>
+  </div>
+</div>
 </main>
 
 <script>
@@ -279,6 +329,7 @@ document.querySelectorAll('.tbtn').forEach(b=>b.addEventListener('click',()=>{
   if(t==='signals')  loadSigs()
   if(t==='analytics')loadAnalytics()
   if(t==='scanlog')  loadScans()
+  if(t==='stocks')   loadStocks()
 }))
 
 /* ── Status UI ───────────────────────────────────────────────────── */
@@ -534,6 +585,16 @@ function startRealtime(){
           if(document.getElementById('p-live').classList.contains('active'))loadTodaySigs()
           if(document.getElementById('p-signals').classList.contains('active'))loadSigs(_sigF)
         })
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'stock_signals'},
+        ({new:r})=>{
+          toastStock(r)
+          if(document.getElementById('p-stocks').classList.contains('active'))loadStocks()
+        })
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'stock_scans'},
+        ({new:r})=>{
+          updateStockStatus(r)
+          if(document.getElementById('p-stocks').classList.contains('active'))loadStockScans()
+        })
     .subscribe()
 }
 
@@ -555,6 +616,156 @@ async function boot(){
   startRealtime()
 }
 document.addEventListener('DOMContentLoaded',boot)
+
+/* ══════════════════════════════════════════════════════════════════
+   STOCKS TAB — NSE Stock Options Bot
+   Tables: stock_signals, stock_scans
+═══════════════════════════════════════════════════════════════════ */
+
+/* ── Stock status cards ──────────────────────────────────────────── */
+function updateStockStatus(r){
+  if(r.stocks_count!=null) document.getElementById('sk0').textContent=r.stocks_count
+  if(r.activity!=null)     document.getElementById('sk2').textContent=Math.round(r.activity)+'/100'
+  if(r.session)            document.getElementById('sk3').textContent=r.session
+  if(r.scan_time)          document.getElementById('sk4').textContent=r.scan_time.slice(0,5)
+}
+
+/* ── Toast for stock signals ─────────────────────────────────────── */
+function toastStock(sig){
+  const d=sig.direction==='CALL'?'c':'p'
+  const icon=sig.signal_type==='SPIKE'?'⚡':sig.signal_type==='REVERSAL'?'↩':'🔔'
+  const t=document.createElement('div')
+  t.className=`toast ${d}`
+  t.innerHTML=`<b>${icon} ${sig.symbol}</b> ${sig.direction==='CALL'?'▲':'▼'} ${sig.direction}
+  — Score <b style="color:${sc(sig.score)}">${sig.score}</b><br>
+  LTP <b>₹${fmt(sig.ltp,2)}</b> · OI <span style="color:var(--call)">+${fmt(sig.oi_change,1)}%</span><br>
+  SL <span style="color:var(--put)">₹${fmt(sig.sl_price,1)}</span>
+  → T <span style="color:var(--call)">₹${fmt(sig.target_price,1)}</span>`
+  document.getElementById('toasts').prepend(t)
+  setTimeout(()=>t.remove(),9000)
+}
+
+/* ── Render latest stock signal cards (top of tab) ───────────────── */
+function renderLatestStock(rows){
+  const w=document.getElementById('sk-lsigs')
+  document.getElementById('sk1').textContent=rows.length
+  if(!rows.length){w.innerHTML='<div class="empty">No stock signals today yet</div>';return}
+  w.innerHTML='<div class="sgrid">'+rows.slice(0,6).map(s=>{
+    const d=s.direction==='CALL'?'c':'p'
+    const icon=s.signal_type==='SPIKE'?'⚡ ':s.signal_type==='REVERSAL'?'↩ ':''
+    const domClr=s.dom_imbalance==null?'var(--muted)':s.dom_imbalance>10?'var(--call)':s.dom_imbalance<-10?'var(--put)':'var(--medium)'
+    return `<div class="scard ${d}">
+    <div class="sch">
+      <span class="scinstr"><span class="dbadge ${d}" style="margin-right:5px">${s.direction==='CALL'?'▲':'▼'} ${s.direction}</span>${icon}<b>${s.symbol}</b></span>
+      <span class="sctime">${s.signal_time||''}</span>
+    </div>
+    <div class="scb">
+      <span class="l">Score</span>  <span class="v" style="color:${sc(s.score)}">${s.score}/100</span>
+      <span class="l">LTP</span>    <span class="v">₹${fmt(s.ltp,2)}</span>
+      <span class="l">OI Build</span><span class="v" style="color:var(--call)">+${fmt(s.oi_change,1)}%</span>
+      <span class="l">Buildup</span><span class="v" style="font-size:11px">${s.buildup||'—'}</span>
+      <span class="l">DOM</span>    <span class="v" style="color:${domClr}">${s.dom_imbalance!=null?s.dom_imbalance.toFixed(0)+'%':'—'}</span>
+      <span class="l">SL</span>     <span class="v" style="color:var(--put)">₹${fmt(s.sl_price,1)}</span>
+      <span class="l">Target</span> <span class="v" style="color:var(--call)">₹${fmt(s.target_price,1)}</span>
+    </div></div>`}).join('')+'</div>'
+}
+
+/* ── Render stock signals table ──────────────────────────────────── */
+function renderStockTable(rows){
+  const tb=document.getElementById('sk-tb')
+  if(!rows.length){tb.innerHTML='<tr><td colspan="13" class="empty">No signals found</td></tr>';return}
+  tb.innerHTML=rows.map(s=>{
+    const d=s.direction==='CALL'?'c':'p'
+    const p=Math.min(100,Math.max(0,s.score||0))
+    const domClr=s.dom_imbalance==null?'var(--muted)':s.dom_imbalance>10?'var(--call)':s.dom_imbalance<-10?'var(--put)':'var(--medium)'
+    const domTxt=s.dom_imbalance!=null?(s.dom_imbalance>0?'+':'')+s.dom_imbalance.toFixed(0)+'%':'—'
+    const icon=s.signal_type==='SPIKE'?'⚡':s.signal_type==='REVERSAL'?'↩':'•'
+    return `<tr>
+    <td>${s.signal_date||'—'}</td>
+    <td>${(s.signal_time||'—').slice(0,5)}</td>
+    <td><b>${s.symbol}</b></td>
+    <td><span class="dbadge ${d}">${s.direction==='CALL'?'▲':'▼'} ${s.direction}</span></td>
+    <td style="color:var(--muted);font-size:12px">${icon} ${s.signal_type||'NORMAL'}</td>
+    <td><div class="mini"><div class="mbar"><div class="mfill" style="width:${p}%;background:${sc(s.score)}"></div></div><b style="color:${sc(s.score)}">${s.score}</b></div></td>
+    <td>₹${fmt(s.ltp,2)}</td>
+    <td style="color:var(--call)">${s.oi_change!=null?'+'+s.oi_change.toFixed(1)+'%':'—'}</td>
+    <td style="color:${(s.vol_change||0)>0?'var(--call)':'var(--put)'}">${s.vol_change!=null?s.vol_change.toFixed(0)+'%':'—'}</td>
+    <td style="color:${domClr}">${domTxt}</td>
+    <td style="font-size:11px;color:var(--muted)">${(s.buildup||'—').replace(' Build Up','')}</td>
+    <td><span style="color:var(--put)">₹${fmt(s.sl_price,1)}</span> → <span style="color:var(--call)">₹${fmt(s.target_price,1)}</span></td>
+    <td>${s.vix!=null?Number(s.vix).toFixed(1):'—'}</td>
+    </tr>`}).join('')
+}
+
+/* ── Load stock signals ──────────────────────────────────────────── */
+let _skRows=[], _skPage=0, _skF={}
+async function loadStockSignals(f={}){
+  if(!sb)return
+  let q=sb.from('stock_signals').select('*').order('created_at',{ascending:false})
+  if(f.d)  q=q.eq('direction',f.d)
+  if(f.t)  q=q.eq('signal_type',f.t)
+  if(f.df) q=q.gte('signal_date',f.df)
+  if(f.dt) q=q.lte('signal_date',f.dt)
+  const {data}=await q.range(_skPage*PG,(_skPage+1)*PG-1)
+  _skRows=data||[]
+  renderStockTable(_skRows)
+  document.getElementById('sk-cnt').textContent=`${_skRows.length} shown`
+  document.getElementById('sk-pinfo').textContent=`Page ${_skPage+1}`
+  document.getElementById('sk-prev').disabled=_skPage===0
+}
+function stockSigApply(){
+  _skPage=0
+  _skF={d:document.getElementById('sk-fd').value, t:document.getElementById('sk-ft').value,
+        df:document.getElementById('sk-fdf').value, dt:document.getElementById('sk-fdt').value}
+  loadStockSignals(_skF)
+}
+function stockSigClear(){
+  ['sk-fd','sk-ft','sk-fdf','sk-fdt'].forEach(id=>document.getElementById(id).value='')
+  _skPage=0;_skF={};loadStockSignals()
+}
+function stockGo(dir){_skPage=Math.max(0,_skPage+dir);loadStockSignals(_skF)}
+
+/* ── Load stock scan log ─────────────────────────────────────────── */
+async function loadStockScans(){
+  if(!sb)return
+  const d=document.getElementById('sk-sld').value||today()
+  const {data}=await sb.from('stock_scans').select('*').eq('scan_date',d).order('created_at',{ascending:false})
+  const rows=data||[]
+  document.getElementById('sk-slcnt').textContent=`${rows.length} scans`
+  const tb=document.getElementById('sk-sltb')
+  if(!rows.length){tb.innerHTML='<tr><td colspan="10" class="empty">No scans on this date</td></tr>';return}
+  tb.innerHTML=rows.map(r=>{
+    const actCol=r.activity>=70?'var(--call)':r.activity>=40?'var(--medium)':'var(--muted)'
+    return`<tr>
+    <td style="color:var(--muted)">#${r.scan_number||'—'}</td>
+    <td>${(r.scan_time||'—').slice(0,5)}</td>
+    <td>${r.stocks_count||'—'}</td>
+    <td style="color:${actCol}">${r.activity!=null?Math.round(r.activity)+'/100':'—'}</td>
+    <td style="font-size:12px;color:var(--muted)">${r.session||'—'}</td>
+    <td><b>${r.top_symbol||'—'}</b></td>
+    <td>${r.top_score!=null?`<span style="color:${sc(r.top_score)}">${r.top_score}</span>`:'—'}</td>
+    <td>${r.alerts_sent>0?`<span style="color:var(--call)">${r.alerts_sent} 🔔</span>`:'—'}</td>
+    <td>${r.vix!=null?Number(r.vix).toFixed(1):'—'}</td>
+    <td>${r.pcr!=null?Number(r.pcr).toFixed(2):'—'}</td>
+    </tr>`}).join('')
+}
+
+/* ── Load everything for Stocks tab ─────────────────────────────── */
+async function loadStocks(){
+  if(!sb)return
+  // Latest today's signals for cards
+  const {data:today_sigs}=await sb.from('stock_signals').select('*')
+    .eq('signal_date',today()).order('created_at',{ascending:false})
+  renderLatestStock(today_sigs||[])
+  // Signal table (no filter, first page)
+  await loadStockSignals(_skF)
+  // Latest scan status
+  const {data:last_scan}=await sb.from('stock_scans').select('*')
+    .order('created_at',{ascending:false}).limit(1)
+  if(last_scan?.[0]) updateStockStatus(last_scan[0])
+  // Scan log for today
+  await loadStockScans()
+}
 </script>
 </body>
 </html>

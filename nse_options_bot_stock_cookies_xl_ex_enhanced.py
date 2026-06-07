@@ -38,8 +38,22 @@ except ImportError:
 #  ⚙️  CONFIGURATION — Fill these in before running
 # ═══════════════════════════════════════════════════════════════════
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")   # Set in GitHub Secrets
-CHAT_ID        = os.environ.get("CHAT_ID", "")           # Set in GitHub Secrets
+# ── Supabase (dashboard live feed) ───────────────────────────────
+SUPABASE_URL         = os.environ.get("SUPABASE_URL",         "https://ngvxrmgrapgyksvfqkva.supabase.co")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")   # Set in run_local.py / GitHub Secrets
+
+# ── Bot 1: Confirmed signals (trade alerts, EOD, commands, VIX, weekly)
+SIGNAL_TOKEN   = os.environ.get("SIGNAL_TOKEN",   os.environ.get("TELEGRAM_TOKEN", ""))
+SIGNAL_CHAT_ID = os.environ.get("SIGNAL_CHAT_ID", os.environ.get("CHAT_ID", ""))
+
+# ── Bot 2: Scan results (every-scan heartbeat, pre-market scan started)
+#    If not configured, scan messages fall back to the signal bot.
+SCAN_TOKEN     = os.environ.get("SCAN_TOKEN",   "")
+SCAN_CHAT_ID   = os.environ.get("SCAN_CHAT_ID", "")
+
+# ── Legacy aliases (kept so any code referencing them still works) ──
+TELEGRAM_TOKEN = SIGNAL_TOKEN
+CHAT_ID        = SIGNAL_CHAT_ID
 
 # ─── Notification channels ─────────────────────────────────────────
 ENABLE_TELEGRAM         = True    # Send to Telegram
@@ -61,9 +75,18 @@ MIN_SCORE_TO_ALERT   =  30.0   # Minimum score to trigger an alert
                                # score is 65/100 (day=35 + OI=30). 30 ≈ 46% of that cap,
                                # equivalent to the 40% bar used on full-day scores.
 SCORE_JUMP_TO_ALERT  =  15.0   # Re-alert if score jumps by this much
+VELOCITY_SPIKE_PCT   =   0.8   # % jump in day_change between two scans → momentum spike
+VELOCITY_MIN_DAY_PCT =   1.5   # % absolute day_change required to fire a spike alert
+
+# ─── DOM (Depth of Market) + Footprint pressure ───────────────────
+DOM_BONUS_STRONG   = 15   # pts: DOM bid/ask imbalance strongly confirms direction
+DOM_BONUS_WEAK     =  8   # pts: DOM slightly confirms direction
+DOM_GATE_THRESH    = 25   # |imbalance| that blocks a signal when DOM opposes it
+FOOTPRINT_BONUS    = 10   # pts: day-range pressure (footprint proxy) confirms direction
+DOM_CACHE_SECS     = 55   # seconds before re-fetching DOM for same symbol
 MAX_RISK_PER_TRADE   =  1500   # Rs max risk per trade
 DAILY_LOSS_LIMIT     =  3000   # Rs
-MAX_TRADES_PER_DAY   =  10
+MAX_TRADES_PER_DAY   =  30
 MONTHLY_TARGET       = (8000, 12000)
 
 # ─── SL / Target calculation (stock price levels) ─────────────────
@@ -596,6 +619,8 @@ state = {
     'prev_price'      : {},      # symbol -> ltp from last scan
     'prev2_price'     : {},      # symbol -> ltp from 2 scans ago
     'last_scores'     : {},
+    'last_day_change' : {},      # symbol -> day_change from last scan (velocity tracking)
+    'velocity_alerted': set(),   # symbols that fired a spike alert today
     'activity_history': [],
     'alerts_sent'     : 0,
     'scan_count'      : 0,
@@ -614,6 +639,8 @@ _market_context = {
 def reset_daily_state():
     state['alerted_today']    = set()
     state['last_scores']      = {}
+    state['last_day_change']  = {}
+    state['velocity_alerted'] = set()
     state['activity_history'] = []
     state['alerts_sent']      = 0
     state['scan_count']       = 0
@@ -705,6 +732,9 @@ _session.headers.update({
 
 # Cached expiry (refreshed daily)
 _expiry_cache = {"expiry": None, "day": None}
+
+# DOM cache: symbol → (dom_imbalance, day_pressure, fetch_timestamp)
+_dom_cache: dict = {}
 
 EXPIRY_URL = "https://smartoptions.trendlyne.com/phoenix/api/fno/get-expiry-dates/?mtype=futures"
 
@@ -894,6 +924,177 @@ def is_active_market():
 #  SIGNAL FILTERING
 # ═══════════════════════════════════════════════════════════════════
 
+def fetch_dom_pressure(symbol):
+    """
+    Fetch 5-level NSE market depth + intraday range pressure for a symbol.
+
+    Returns (dom_imbalance, day_pressure):
+      dom_imbalance : -100 (pure sell wall) → +100 (pure bid wall)
+      day_pressure  :    0 (LTP at day low) → 100  (LTP at day high)
+                        <40 = selling pressure zone, >60 = buying pressure zone
+
+    Returns (None, None) on any network/parse error — callers must handle.
+    Caches results for DOM_CACHE_SECS to avoid hammering NSE per stock.
+    """
+    import time as _time
+    cached = _dom_cache.get(symbol)
+    if cached:
+        imb, dp, ts = cached
+        if _time.time() - ts < DOM_CACHE_SECS:
+            return imb, dp
+
+    url = f"https://www.nseindia.com/api/quote-equity?symbol={symbol}"
+    try:
+        r = _nse_session.get(url, timeout=8)
+        r.raise_for_status()
+        d = r.json()
+
+        # ── DOM imbalance from 5-level bid/ask book ───────────────
+        depth   = d.get("depth") or {}
+        buys    = depth.get("buy")  or []
+        sells   = depth.get("sell") or []
+        bid_qty = sum(int(b.get("quantity") or 0) for b in buys)
+        ask_qty = sum(int(s.get("quantity") or 0) for s in sells)
+        total   = bid_qty + ask_qty
+        dom_imb = round((bid_qty - ask_qty) / total * 100, 1) if total > 0 else 0.0
+
+        # ── Day-range pressure (footprint proxy) ──────────────────
+        # Uses intraday high/low from priceInfo; falls back to 52-week high/low
+        pi  = d.get("priceInfo") or {}
+        idhl = pi.get("intraDayHighLow") or {}
+        hi   = float(idhl.get("max") or pi.get("weekHighLow", {}).get("max") or 0)
+        lo   = float(idhl.get("min") or pi.get("weekHighLow", {}).get("min") or 0)
+        ltp  = float(pi.get("lastPrice") or 0)
+        rng  = hi - lo
+        day_pres = round((ltp - lo) / rng * 100, 1) if rng > 0 else 50.0
+
+        _dom_cache[symbol] = (dom_imb, day_pres, _time.time())
+        print(f"[DOM] {symbol}: imbalance={dom_imb:+.1f}%  day_pressure={day_pres:.0f}%"
+              f"  (bid={bid_qty:,} ask={ask_qty:,}  H={hi} L={lo} LTP={ltp})")
+        return dom_imb, day_pres
+
+    except Exception as e:
+        print(f"[DOM] {symbol}: fetch error — {e}")
+        return None, None
+
+
+def apply_dom_bonus(s):
+    """
+    Evaluate DOM imbalance + day-range pressure for stock s.
+
+    Returns (bonus_pts, blocked, dom_imb, day_pres):
+      bonus_pts : score points to add (0 if data unavailable or neutral)
+      blocked   : True when DOM strongly opposes direction → suppress signal
+      dom_imb   : raw imbalance value for logging/display
+      day_pres  : raw day-pressure value for logging/display
+    """
+    sym  = s['symbol']
+    dire = s['direction']
+
+    dom_imb, day_pres = fetch_dom_pressure(sym)
+    if dom_imb is None:
+        # No data — don't penalise, just skip DOM contribution
+        return 0, False, None, None
+
+    # ── Confirmation gate: block if DOM clearly opposes direction ──
+    if dire == 'CALL' and dom_imb < -DOM_GATE_THRESH:
+        print(f"[DOM] {sym}: BLOCKED — sell-side DOM {dom_imb:+.0f}% opposes CALL")
+        return 0, True, dom_imb, day_pres
+    if dire == 'PUT'  and dom_imb >  DOM_GATE_THRESH:
+        print(f"[DOM] {sym}: BLOCKED — bid-side DOM {dom_imb:+.0f}% opposes PUT")
+        return 0, True, dom_imb, day_pres
+
+    # ── Score booster: DOM agrees with direction ───────────────────
+    bonus = 0
+    if dire == 'CALL':
+        if dom_imb > 30:   bonus += DOM_BONUS_STRONG
+        elif dom_imb > 10: bonus += DOM_BONUS_WEAK
+    else:  # PUT
+        if dom_imb < -30:   bonus += DOM_BONUS_STRONG
+        elif dom_imb < -10: bonus += DOM_BONUS_WEAK
+
+    # ── Footprint proxy: price in upper/lower zone of day range ───
+    if day_pres is not None:
+        if dire == 'CALL' and day_pres > 60:
+            bonus += FOOTPRINT_BONUS   # price in upper range → buying pressure
+        elif dire == 'PUT' and day_pres < 40:
+            bonus += FOOTPRINT_BONUS   # price in lower range → selling pressure
+
+    return bonus, False, dom_imb, day_pres
+
+
+def check_velocity_spikes(stocks):
+    """
+    Fire an early ⚡ Momentum Spike alert when a stock's day_change jumps
+    by >= VELOCITY_SPIKE_PCT within a single scan interval, bypassing the
+    normal OI score gate. Catches moves as they start rather than after OI
+    data catches up.
+    """
+    if state['alerts_sent'] >= MAX_TRADES_PER_DAY:
+        return
+
+    _, vix_block = get_vix_threshold_delta()
+    if vix_block:
+        return
+
+    now_str = ist_now().strftime('%I:%M %p')
+    fired   = []
+
+    for s in stocks:
+        sym = s['symbol']
+        dc  = s['day_change']
+        prev_dc = state['last_day_change'].get(sym)
+
+        if prev_dc is None:
+            continue  # need at least one prior scan to compute velocity
+
+        delta = dc - prev_dc
+
+        if abs(delta) < VELOCITY_SPIKE_PCT:
+            continue
+        if abs(dc) < VELOCITY_MIN_DAY_PCT:
+            continue
+        if sym in state['velocity_alerted']:
+            continue
+        if sym in state['alerted_today']:
+            continue
+
+        direction = 'CALL' if dc > 0 else 'PUT'
+        ltp       = s['ltp']
+        sl        = round(ltp * (1 - SL_PCT / 100) if direction == 'CALL' else ltp * (1 + SL_PCT / 100), 2)
+        target    = round(ltp * (1 + TARGET_PCT / 100) if direction == 'CALL' else ltp * (1 - TARGET_PCT / 100), 2)
+        dir_icon  = '🟢' if direction == 'CALL' else '🔴'
+
+        msg = (
+            f"⚡ *MOMENTUM SPIKE — {sym}*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{dir_icon} Direction : *{direction}*\n"
+            f"💰 LTP       : ₹{ltp}\n"
+            f"📈 Day chg   : *{dc:+.2f}%*  (was {prev_dc:+.2f}% last scan, Δ{delta:+.2f}%)\n"
+            f"📊 OI chg    : {s['oi_change']:+.1f}%  |  Vol chg: {s['vol_change']:+.0f}%\n"
+            f"🛑 SL Price  : ₹{sl}\n"
+            f"🎯 Target    : ₹{target}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"_Early alert — OI confirmation may lag.  {now_str} IST_"
+        )
+        send_telegram(msg)
+        sb_push_signal(s, signal_type='SPIKE')        # Supabase dashboard
+        state['velocity_alerted'].add(sym)
+        state['alerted_today'].add(sym)
+        state['alerts_sent'] += 1
+        fired.append(sym)
+        print(f"[SPIKE] {sym}: dc jumped {prev_dc:+.2f}% → {dc:+.2f}% (Δ{delta:+.2f}%) → {direction} alert fired")
+
+        if state['alerts_sent'] >= MAX_TRADES_PER_DAY:
+            break
+
+    if fired:
+        excel_log_signals(
+            [s for s in stocks if s['symbol'] in fired],
+            0, classify_session(), _expiry_cache.get('expiry', '?')
+        )
+
+
 def filter_signals(stocks):
     active    = is_active_market()
     threshold = MIN_SCORE_TO_ALERT if active else MIN_SCORE_TO_ALERT + QUIET_SCORE_BOOST
@@ -940,6 +1141,15 @@ def filter_signals(stocks):
         pcr_bonus       = get_pcr_bonus(s['direction'])
         s['score']      = min(round(s['score'] + pcr_bonus, 1), 100)
         s['pcr_bonus']  = pcr_bonus
+
+        # ── DOM + Footprint pressure ──────────────────────────────
+        dom_bonus, dom_blocked, dom_imb, day_pres = apply_dom_bonus(s)
+        if dom_blocked:
+            continue   # confirmation gate: DOM opposes signal — skip
+        s['score']      = min(round(s['score'] + dom_bonus, 1), 100)
+        s['dom_bonus']  = dom_bonus
+        s['dom_imb']    = dom_imb    # None if unavailable
+        s['day_pres']   = day_pres   # None if unavailable
 
         prev_score      = state['last_scores'].get(sym, 0)
         s['is_new']     = sym not in state['alerted_today']
@@ -995,6 +1205,22 @@ def signal_message(picks, expiry, activity, updated_at):
         pcr_b = s.get("pcr_bonus", 0)
         pcr_b_str = (f"   PCR Boost: `{pcr_b:+.0f} pts` ({'↑ confirms' if pcr_b > 0 else '↓ conflicts'})\n"
                      if pcr_b != 0 else "")
+
+        # ── DOM + Footprint line ──────────────────────────────────
+        dom_b   = s.get("dom_bonus", 0)
+        dom_imb = s.get("dom_imb")
+        day_p   = s.get("day_pres")
+        if dom_imb is not None:
+            _imb_bar = ("🟢" if dom_imb > 10 else ("🔴" if dom_imb < -10 else "🟡"))
+            _dp_bar  = ("⬆️" if (day_p or 50) > 60 else ("⬇️" if (day_p or 50) < 40 else "➡️"))
+            dom_str  = (
+                f"   📖 DOM     : {_imb_bar} `{dom_imb:+.0f}%`  "
+                f"Pressure: {_dp_bar} `{day_p:.0f}%`"
+                + (f"  `+{dom_b:.0f} pts`" if dom_b > 0 else "") + "\n"
+            )
+        else:
+            dom_str = ""
+
         # Calculate actual SL / Target stock price levels
         ltp = s['ltp']
         if s['direction'] == 'CALL':
@@ -1014,6 +1240,7 @@ def signal_message(picks, expiry, activity, updated_at):
             f"   OI Build : +{s['oi_change']:.2f}%\n"
             f"   Score    : *{s['score']}/100*\n"
             f"{pcr_b_str}"
+            f"{dom_str}"
             f"   📌 Strike : ATM or 1 OTM {s['direction']}\n"
             f"   🛑 SL     : Rs {sl_price:,.1f}  ({SL_PCT:.1f}% away)\n"
             f"   🎯 Target : Rs {tgt_price:,.1f}  (+{move_pts:,.1f} pts, {TARGET_PCT:.1f}%)\n"
@@ -1054,19 +1281,166 @@ def eod_summary_message():
 #  TELEGRAM SENDER
 # ═══════════════════════════════════════════════════════════════════
 
-def send_telegram(text):
+def send_telegram(text, channel='signal'):
+    """
+    Send a Telegram message to the appropriate bot.
+
+    channel='signal'  →  confirmed signal bot  (SIGNAL_TOKEN  / SIGNAL_CHAT_ID)
+                         trade alerts, EOD, VIX blocks, commands, weekly report
+    channel='scan'    →  scan heartbeat bot     (SCAN_TOKEN    / SCAN_CHAT_ID)
+                         every-5-min scan summary, pre-market scan started
+
+    If the scan bot tokens are not configured, scan messages fall back to the
+    signal bot so the bot works with a single bot out of the box.
+    """
     if not ENABLE_TELEGRAM:
         return True
-    url     = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {'chat_id': CHAT_ID, 'text': text, 'parse_mode': 'Markdown'}
+
+    if channel == 'scan' and SCAN_TOKEN and SCAN_CHAT_ID:
+        token   = SCAN_TOKEN
+        chat_id = SCAN_CHAT_ID
+        tag     = "[TG-SCAN]"
+    else:
+        token   = SIGNAL_TOKEN
+        chat_id = SIGNAL_CHAT_ID
+        tag     = "[TG-SIG] " if channel == 'signal' else "[TG-SIG*]"  # * = scan fallback
+
+    if not token or not chat_id:
+        print(f"[TG] ⚠️  No token/chat_id for channel='{channel}' — skipped")
+        return False
+
+    url     = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'}
     try:
         r  = requests.post(url, json=payload, timeout=15)
         ok = r.json().get('ok', False)
-        print("[TG]", "✅ Sent" if ok else f"❌ {r.json()}")
+        print(tag, "✅ Sent" if ok else f"❌ {r.json()}")
         return ok
     except Exception as e:
         print(f"[TG ERROR] {e}")
         return False
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  SUPABASE LIVE FEED  (pushes signals + scans to dashboard)
+# ═══════════════════════════════════════════════════════════════════
+
+_sb_client = None   # initialised lazily on first push
+
+def _get_sb():
+    """Return a Supabase client (service role), or None if not configured."""
+    global _sb_client
+    if _sb_client is not None:
+        return _sb_client
+    if not SUPABASE_SERVICE_KEY:
+        return None
+    try:
+        from supabase import create_client
+        _sb_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+        print("[SUPABASE] Client initialised.")
+    except Exception as e:
+        print(f"[SUPABASE] Init failed: {e}  (pip install supabase)")
+    return _sb_client
+
+
+def sb_push_signal(s, signal_type='NORMAL'):
+    """Push a confirmed stock signal row to Supabase stock_signals table."""
+    sb = _get_sb()
+    if not sb:
+        return
+    ist = ist_now()
+    ltp = s.get('ltp', 0)
+    dire = s.get('direction', '')
+    sl    = round(ltp * (1 - SL_PCT/100) if dire=='CALL' else ltp * (1 + SL_PCT/100), 2)
+    tgt   = round(ltp * (1 + TARGET_PCT/100) if dire=='CALL' else ltp * (1 - TARGET_PCT/100), 2)
+    row = {
+        'signal_date'  : ist.date().isoformat(),
+        'signal_time'  : ist.time().strftime('%H:%M:%S'),
+        'symbol'       : s.get('symbol'),
+        'direction'    : dire,
+        'signal_type'  : signal_type,
+        'score'        : s.get('score'),
+        'ltp'          : ltp,
+        'lot_size'     : s.get('lot_size'),
+        'day_change'   : s.get('day_change'),
+        'vol_change'   : s.get('vol_change'),
+        'oi_change'    : s.get('oi_change'),
+        'buildup'      : s.get('buildup'),
+        'dom_imbalance': s.get('dom_imb'),
+        'day_pressure' : s.get('day_pres'),
+        'dom_bonus'    : s.get('dom_bonus'),
+        'pcr_bonus'    : s.get('pcr_bonus'),
+        'sl_price'     : sl,
+        'target_price' : tgt,
+        'vix'          : _market_context.get('vix'),
+        'pcr'          : _market_context.get('pcr'),
+        'session'      : classify_session(),
+        'activity'     : state.get('activity_history', [0])[-1] if state.get('activity_history') else None,
+    }
+    try:
+        sb.table('stock_signals').insert(row).execute()
+        print(f"[SUPABASE] Signal pushed: {s.get('symbol')} {dire}")
+    except Exception as e:
+        print(f"[SUPABASE] Signal push failed: {e}")
+
+
+def sb_push_scan(stocks, activity, session):
+    """Push a scan heartbeat row to Supabase stock_scans table."""
+    sb = _get_sb()
+    if not sb:
+        return
+    ist = ist_now()
+    # Top pick by score
+    top = max(stocks, key=lambda x: compute_score(x), default=None) if stocks else None
+    top_candidates = [
+        {'symbol': s['symbol'], 'score': compute_score(s),
+         'direction': 'CALL' if s.get('day_change',0)>0 else 'PUT',
+         'dc': s.get('day_change'), 'oi': s.get('oi_change')}
+        for s in sorted(stocks, key=compute_score, reverse=True)[:5]
+    ] if stocks else []
+    row = {
+        'scan_date'    : ist.date().isoformat(),
+        'scan_time'    : ist.time().strftime('%H:%M:%S'),
+        'scan_number'  : state.get('scan_count'),
+        'stocks_count' : len(stocks),
+        'activity'     : round(activity, 1),
+        'session'      : session,
+        'alerts_sent'  : state.get('alerts_sent', 0),
+        'top_symbol'   : top['symbol'] if top else None,
+        'top_score'    : round(compute_score(top), 1) if top else None,
+        'top_direction': ('CALL' if (top or {}).get('day_change',0)>0 else 'PUT') if top else None,
+        'top_candidates': top_candidates,
+        'vix'          : _market_context.get('vix'),
+        'pcr'          : _market_context.get('pcr'),
+    }
+    try:
+        sb.table('stock_scans').insert(row).execute()
+    except Exception as e:
+        print(f"[SUPABASE] Scan push failed: {e}")
+
+
+def sb_update_status():
+    """Update the bot_status row (id=1) with current stock bot state."""
+    sb = _get_sb()
+    if not sb:
+        return
+    ist = ist_now()
+    is_open = is_market_open()
+    row = {
+        'status'             : 'running' if is_open else 'sleeping',
+        'scan_count'         : state.get('scan_count', 0),
+        'alerts_today'       : state.get('alerts_sent', 0),
+        'vix'                : _market_context.get('vix'),
+        'pcr'                : _market_context.get('pcr'),
+        'last_scan_at'       : ist.isoformat(),
+        'stock_scan_count'   : state.get('scan_count', 0),
+        'stock_alerts_today' : state.get('alerts_sent', 0),
+        'stock_last_scan'    : ist.isoformat(),
+    }
+    try:
+        sb.table('bot_status').upsert({**row, 'id': 1}).execute()
+    except Exception as e:
+        print(f"[SUPABASE] Status update failed: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1641,7 +2015,8 @@ def premarket_scan():
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🕐 {now.strftime('%d %b %Y  %I:%M %p')} IST\n"
         f"📋 Fetching NSE pre-open data + OI gainers...\n"
-        f"_Full setup alert will follow in ~30 seconds_"
+        f"_Full setup alert will follow in ~30 seconds_",
+        channel='scan'
     )
 
     # ── Fetch VIX + PCR first (force refresh at market open) ─────
@@ -1916,6 +2291,9 @@ def scan_job():
     session = classify_session()
     print(f"[INFO] {len(stocks)} stocks | Activity: {activity}/100 | {session}")
 
+    # ── Velocity / momentum spike check (early alert, bypasses score gate)
+    check_velocity_spikes(stocks)
+
     # ── Excel: log every scan ─────────────────────────────────────
     excel_log_scan(state['scan_count'], len(stocks), activity,
                    session, state['alerts_sent'], state['alerted_today'])
@@ -1926,6 +2304,11 @@ def scan_job():
         sc = compute_score(s)
         if sc > 0:
             state['last_scores'][s['symbol']] = sc
+        state['last_day_change'][s['symbol']] = s['day_change']
+
+    # ── Supabase: push scan heartbeat + update bot status ─────────
+    sb_push_scan(stocks, activity, session)
+    sb_update_status()
 
     # ── Debug: show top 5 candidates every scan ───────────────────
     _candidates = []
@@ -1981,7 +2364,7 @@ def scan_job():
     if _top_lines:
         _tg_scan_msg += f"📊 Top candidates:\n{_top_lines}"
     _tg_scan_msg += _result_line
-    send_telegram(_tg_scan_msg)
+    send_telegram(_tg_scan_msg, channel='scan')
 
     if not picks:
         print(f"[INFO] No new signals. Alerted: {state['alerted_today']}")
@@ -1995,6 +2378,7 @@ def scan_job():
     if ok or ENABLE_DESKTOP_NOTIFY:
         for p in picks:
             state['alerted_today'].add(p['symbol'])
+            sb_push_signal(p, signal_type='NORMAL')   # Supabase dashboard
         state['alerts_sent'] += len(picks)
 
         # ── Excel: log signals ────────────────────────────────────
@@ -2313,7 +2697,7 @@ def telegram_poll_loop():
 
     while True:
         try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+            url = f"https://api.telegram.org/bot{SIGNAL_TOKEN}/getUpdates"
             r   = requests.get(url,
                                params={"offset": _tg_offset + 1, "timeout": 25},
                                timeout=30)
@@ -2465,18 +2849,16 @@ if __name__ == "__main__":
             send_telegram("⚠️ Test failed — data fetch error.")
         sys.exit(0)
 
-    # ── Guard: exit immediately if started outside market window ────
+    # ── Started outside market window — just wait, don't exit ───────
     _mins_now   = IST_NOW.hour * 60 + IST_NOW.minute
     _is_weekday = IST_NOW.weekday() < 5
     _after_close    = _mins_now > 15 * 60 + 35
     _before_preopen = _mins_now < 9 * 60 + 5
 
     if not _is_weekday:
-        print(f"[{IST_NOW.strftime('%A %H:%M')} IST] Weekend — bot exiting.")
-        sys.exit(0)
-    if _after_close or _before_preopen:
-        print(f"[{IST_NOW.strftime('%H:%M')} IST] Outside market window — bot exiting.")
-        sys.exit(0)
+        print(f"[{IST_NOW.strftime('%A %H:%M')} IST] Weekend — bot will wait for Monday market open.")
+    elif _after_close or _before_preopen:
+        print(f"[{IST_NOW.strftime('%H:%M')} IST] Outside market window — bot will wait for next open (09:15 IST).")
 
     # ── Pre-market only mode ─────────────────────────────────────────
     PREMARKET_ONLY = os.environ.get("PREMARKET_ONLY", "false").lower() == "true"
@@ -2492,8 +2874,10 @@ if __name__ == "__main__":
     reset_daily_state()
 
     # Print startup info
-    desktop_status = f"✅ ({_notifier})" if _notifier else "❌ (install plyer)"
-    tg_status      = "✅" if ENABLE_TELEGRAM else "⏸ disabled"
+    desktop_status  = f"✅ ({_notifier})" if _notifier else "❌ (install plyer)"
+    sig_bot_status  = "✅ configured" if (SIGNAL_TOKEN and SIGNAL_CHAT_ID) else "❌ missing SIGNAL_TOKEN / SIGNAL_CHAT_ID"
+    scan_bot_status = "✅ configured" if (SCAN_TOKEN and SCAN_CHAT_ID)   else "⚠️  not set — scan msgs → signal bot"
+    tg_status       = "✅" if ENABLE_TELEGRAM else "⏸ disabled"
     print(f"""
 ┌─────────────────────────────────────────┐
 │     NSE Smart Options Bot — Started     │
@@ -2502,6 +2886,8 @@ if __name__ == "__main__":
 │ Scan every   : {SCAN_INTERVAL_MIN} minutes                    │
 │ Min score    : {MIN_SCORE_TO_ALERT} / 100                    │
 │ Telegram     : {tg_status:<30} │
+│ 🔔 Signal bot: {sig_bot_status:<30} │
+│ 📡 Scan bot  : {scan_bot_status:<30} │
 │ Desktop notif: {desktop_status:<30} │
 └─────────────────────────────────────────┘
 💡 Test : python nse_options_bot.py test
@@ -2518,22 +2904,24 @@ if __name__ == "__main__":
 
     # ── Startup Telegram notification ────────────────────────────
     refresh_market_context(force=True)
-    _now_ist  = ist_now()
-    _session  = classify_session()
-    _exit_at  = "15:28 IST"
-    _vix_txt  = vix_label()
-    _pcr_txt  = pcr_label()
+    _now_ist      = ist_now()
+    _session_label = classify_session()
+    _vix_txt      = vix_label()
+    _pcr_txt      = pcr_label()
+    _scan_routing = "separate scan bot 📡" if (SCAN_TOKEN and SCAN_CHAT_ID) else "this bot (scan bot not configured)"
     send_telegram(
         f"🟢 *NSE Options Bot — STARTED*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🕐 Time      : {_now_ist.strftime('%d %b %Y  %I:%M %p')} IST\n"
-        f"📊 Session   : {_session}\n"
+        f"📊 Session   : {_session_label}\n"
         f"⏱ Scan every : {SCAN_INTERVAL_MIN} minutes\n"
         f"🎯 Min score  : {MIN_SCORE_TO_ALERT}/100\n"
         f"📈 India VIX  : {_vix_txt}\n"
         f"⚖️ Nifty PCR  : {_pcr_txt}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Bot will scan stocks until {_exit_at}.\n"
+        f"🔔 Signals → *this bot*\n"
+        f"📡 Scan heartbeat → *{_scan_routing}*\n"
+        f"Bot runs 24/7 — auto-resumes 09:15 IST each trading day.\n"
         f"_Commands: STATUS · WIN · LOSS · SKIP · TUNE_"
     )
 
@@ -2546,13 +2934,13 @@ if __name__ == "__main__":
 
     while True:
         schedule.run_pending()
-        time.sleep(20)
-        # Auto-exit at 3:28 PM IST so GitHub Actions "commit" step can run
-        # within the 6-hour job limit (job starts ~9:30 AM → 5h58m → safe)
         _t = ist_now()
-        if _t.hour * 60 + _t.minute >= 15 * 60 + 28:
-            print(f"[{_t.strftime('%H:%M')} IST] Market session complete — bot exiting.")
-            break
+        # Sleep longer outside market hours to avoid busy-waiting overnight
+        _m = _t.hour * 60 + _t.minute
+        if _t.weekday() >= 5 or _m < 9 * 60 + 5 or _m > 15 * 60 + 35:
+            time.sleep(60)   # 1-min tick outside hours — still catches all scheduled jobs
+        else:
+            time.sleep(20)   # 20-sec tick during market hours for responsiveness
 
 
 # ═══════════════════════════════════════════════════════════════════
