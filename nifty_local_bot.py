@@ -125,15 +125,22 @@ _OS = platform.system()
 # ═══════════════════════════════════════════════════════════════
 
 state = {
-    "scan_count":     0,
-    "alerts_sent":    0,
-    "trades_today":   0,
-    "vix":            None,
-    "pcr":            None,
-    "last_vix_fetch": None,
-    "last_signal":    {},
-    "data_errors":    {},
-    "scores_seen":    [],
+    "scan_count":       0,
+    "alerts_sent":      0,
+    "trades_today":     0,
+    "vix":              None,
+    "pcr":              None,
+    "last_vix_fetch":   None,
+    "last_signal":      {},
+    "data_errors":      {},
+    "scores_seen":      [],
+    # ── Order flow ───────────────────────────────────────────
+    "fii_net":          None,   # FII cash market net (Cr)
+    "dii_net":          None,   # DII cash market net (Cr)
+    "fii_deriv_net":    None,   # FII index futures net (Cr)
+    "last_fii_fetch":   None,
+    "options_flow":     {},     # keyed by symbol: NIFTY/BANKNIFTY/SENSEX
+    "dom":              {},     # keyed by symbol
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -375,6 +382,193 @@ def fetch_vix_pcr():
         print(f"  [PCR] {e}")
     return vix_val, pcr_val
 
+# ── FII / DII ─────────────────────────────────────────────────────
+def fetch_fii_dii():
+    """Fetch FII & DII cash market + FII derivatives data from NSE.
+    Returns (fii_cash_net, dii_cash_net, fii_deriv_net) in Crores."""
+    fii_cash = dii_cash = fii_deriv = None
+    try:
+        r = _nse_session().get(
+            "https://www.nseindia.com/api/fiidiiTradeReact", timeout=12)
+        if r.status_code == 200:
+            for row in r.json():
+                cat = row.get("category", "").upper()
+                net = row.get("netValue") or row.get("net") or "0"
+                try:
+                    val = float(str(net).replace(",", ""))
+                except Exception:
+                    val = 0.0
+                if "FII" in cat or "FPI" in cat:
+                    fii_cash = val
+                elif "DII" in cat:
+                    dii_cash = val
+    except Exception as e:
+        print(f"  [FII/DII cash] {e}")
+    try:
+        r = _nse_session().get(
+            "https://www.nseindia.com/api/fiiDerivStat", timeout=12)
+        if r.status_code == 200:
+            rows = r.json().get("data", [])
+            if rows:
+                latest = rows[0]
+                buy  = float(str(latest.get("indexFutBuyValue",  "0")).replace(",","") or 0)
+                sell = float(str(latest.get("indexFutSellValue", "0")).replace(",","") or 0)
+                fii_deriv = round(buy - sell, 2)
+    except Exception as e:
+        print(f"  [FII deriv] {e}")
+    return fii_cash, dii_cash, fii_deriv
+
+# ── Options flow: Max Pain + ATM OI + OI walls + COI ──────────────
+def _calc_max_pain(strikes: dict) -> Optional[float]:
+    """Strike price where total options buyer losses are maximum (market pins)."""
+    if not strikes:
+        return None
+    best_strike, min_loss = None, float("inf")
+    for test in sorted(strikes):
+        loss = sum(
+            (test - s) * d["ce_oi"] if test > s else
+            (s - test) * d["pe_oi"] if test < s else 0
+            for s, d in strikes.items()
+        )
+        if loss < min_loss:
+            min_loss, best_strike = loss, test
+    return best_strike
+
+def fetch_options_flow(symbol: str = "NIFTY", ltp: float = None) -> dict:
+    """Full options chain analysis: max pain, ATM OI, OI walls, COI bias."""
+    empty = {"max_pain": None, "atm_bias": None, "resistance": None,
+             "support": None, "oi_change_bias": None, "atm_ce_oi": 0, "atm_pe_oi": 0}
+    try:
+        r = _nse_session().get(
+            f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}",
+            timeout=15)
+        if r.status_code != 200:
+            return empty
+        js    = r.json()["records"]
+        expiries = js.get("expiryDates", [])
+        if not expiries:
+            return empty
+        nearest = expiries[0]
+        strikes = {}
+        for rec in js.get("data", []):
+            if rec.get("expiryDate") != nearest:
+                continue
+            sp = rec.get("strikePrice", 0)
+            strikes[sp] = {
+                "ce_oi":  rec.get("CE", {}).get("openInterest",          0),
+                "pe_oi":  rec.get("PE", {}).get("openInterest",          0),
+                "ce_coi": rec.get("CE", {}).get("changeinOpenInterest",  0),
+                "pe_coi": rec.get("PE", {}).get("changeinOpenInterest",  0),
+            }
+        if not strikes:
+            return empty
+        max_pain = _calc_max_pain(strikes)
+        # ATM strike
+        atm = min(strikes, key=lambda x: abs(x - ltp)) if ltp else None
+        atm_d = strikes.get(atm, {}) if atm else {}
+        atm_bias = ("CALL" if atm_d.get("pe_oi", 0) > atm_d.get("ce_oi", 0)
+                    else "PUT") if atm_d else None
+        # OI walls (highest OI outside ATM)
+        above = {s: d for s, d in strikes.items() if ltp and s > ltp}
+        below = {s: d for s, d in strikes.items() if ltp and s < ltp}
+        resistance = max(above, key=lambda x: above[x]["ce_oi"]) if above else None
+        support    = max(below, key=lambda x: below[x]["pe_oi"]) if below else None
+        # COI bias
+        tot_ce_coi = sum(d["ce_coi"] for d in strikes.values())
+        tot_pe_coi = sum(d["pe_coi"] for d in strikes.values())
+        oi_change_bias = "BULL" if tot_pe_coi > tot_ce_coi else "BEAR"
+        return {
+            "max_pain":       max_pain,
+            "atm_bias":       atm_bias,
+            "atm_ce_oi":      atm_d.get("ce_oi", 0),
+            "atm_pe_oi":      atm_d.get("pe_oi", 0),
+            "resistance":     resistance,
+            "support":        support,
+            "oi_change_bias": oi_change_bias,
+            "tot_ce_coi":     tot_ce_coi,
+            "tot_pe_coi":     tot_pe_coi,
+        }
+    except Exception as e:
+        print(f"  [OPTIONS FLOW {symbol}] {e}")
+        return empty
+
+# ── Volume Delta (footprint approximation from OHLCV) ─────────────
+def calc_volume_delta(df_today: pd.DataFrame) -> dict:
+    """Approximate buy vs sell volume using candle body position in range.
+    Positive delta = net buying pressure (footprint chart substitute)."""
+    empty = {"buy_vol": 0, "sell_vol": 0, "delta": 0,
+             "delta_pct": 0.0, "recent_delta": 0, "bias": "NEUTRAL"}
+    if df_today is None or df_today.empty:
+        return empty
+    try:
+        hl = (df_today["High"] - df_today["Low"]).replace(0, np.nan)
+        buy_ratio  = ((df_today["Close"] - df_today["Low"]) / hl).fillna(0.5)
+        vol        = df_today["Volume"].fillna(0)
+        buy_vol    = int((vol * buy_ratio).sum())
+        sell_vol   = int((vol * (1 - buy_ratio)).sum())
+        delta      = buy_vol - sell_vol
+        total      = buy_vol + sell_vol or 1
+        delta_pct  = round(delta / total * 100, 1)
+        # Last 30 min (6 × 5-min candles)
+        recent     = df_today.tail(6)
+        hl_r       = (recent["High"] - recent["Low"]).replace(0, np.nan)
+        br_r       = ((recent["Close"] - recent["Low"]) / hl_r).fillna(0.5)
+        recent_delta = int(((recent["Volume"].fillna(0)) * (2 * br_r - 1)).sum())
+        bias = ("BULL" if recent_delta > 0 else
+                "BEAR" if recent_delta < 0 else "NEUTRAL")
+        return {"buy_vol": buy_vol, "sell_vol": sell_vol, "delta": delta,
+                "delta_pct": delta_pct, "recent_delta": recent_delta, "bias": bias}
+    except Exception as e:
+        print(f"  [VOL DELTA] {e}")
+        return empty
+
+# ── DOM: Bid/Ask depth from NSE Futures ───────────────────────────
+def fetch_dom_imbalance(symbol: str = "NIFTY") -> dict:
+    """Get top-5 bid/ask from NSE futures market depth.
+    Imbalance > 0 = more buyers, < 0 = more sellers."""
+    empty = {"imbalance": None, "best_bid": None, "best_ask": None,
+             "total_bid_qty": 0, "total_ask_qty": 0}
+    try:
+        r = _nse_session().get(
+            f"https://www.nseindia.com/api/quote-derivative?symbol={symbol}",
+            timeout=12)
+        if r.status_code != 200:
+            return empty
+        stocks = r.json().get("stocks", [])
+        # Find nearest futures contract
+        fut = next((s for s in stocks
+                    if s.get("metadata", {}).get("instrumentType") == "Index Futures"), None)
+        if fut is None:
+            return empty
+        depth = fut.get("marketDepth", {})
+        bids  = depth.get("buy",  [])
+        asks  = depth.get("sell", [])
+        bid_qty = sum(b.get("quantity", 0) for b in bids)
+        ask_qty = sum(a.get("quantity", 0) for a in asks)
+        total   = bid_qty + ask_qty or 1
+        imbalance = round((bid_qty - ask_qty) / total, 3)   # +1=all bids, -1=all asks
+        best_bid  = bids[0].get("price") if bids else None
+        best_ask  = asks[0].get("price") if asks else None
+        return {"imbalance": imbalance, "best_bid": best_bid, "best_ask": best_ask,
+                "total_bid_qty": bid_qty, "total_ask_qty": ask_qty}
+    except Exception as e:
+        print(f"  [DOM {symbol}] {e}")
+        return empty
+
+# ── Refresh order flow (called in refresh_vix_pcr) ────────────────
+def refresh_fii_dii():
+    """Fetch FII/DII once per day (data is end-of-day from NSE)."""
+    last = state.get("last_fii_fetch")
+    now  = datetime.now(IST)
+    if last and last.date() == now.date() and (now - last).total_seconds() < 3600:
+        return
+    fii, dii, fii_d = fetch_fii_dii()
+    if fii  is not None: state["fii_net"]       = fii
+    if dii  is not None: state["dii_net"]       = dii
+    if fii_d is not None: state["fii_deriv_net"] = fii_d
+    state["last_fii_fetch"] = now
+    print(f"  [FII/DII] Cash FII={fii} DII={dii} | Deriv FII={fii_d} Cr")
+
 def _normalise_df(df) -> Optional[pd.DataFrame]:
     """Flatten MultiIndex columns, convert index to IST, drop NaNs."""
     if df is None or df.empty:
@@ -528,6 +722,63 @@ def analyze(name, cfg):
         score += bonus
         cond["PCR"] = f"{pcr_v:.2f}"
 
+    # ── Order Flow ────────────────────────────────────────────────
+    # 1. Volume Delta  (footprint approx — no extra API call)
+    vd = calc_volume_delta(df_today)
+    vd_ok = (vd["bias"] == "BULL" and direction == "CALL") or \
+            (vd["bias"] == "BEAR" and direction == "PUT")
+    if vd_ok: score += 5
+    cond["Vol Delta"] = f"{vd['bias']} Δ{vd['delta_pct']:+.1f}% (30m:{vd['recent_delta']:+,})"
+
+    # 2. Options chain flow  (NIFTY / BANKNIFTY only)
+    _opt_map = {"NIFTY50": "NIFTY", "BANKNIFTY": "BANKNIFTY"}
+    opt_sym  = _opt_map.get(name)
+    of       = {}
+    if opt_sym:
+        of = fetch_options_flow(opt_sym, ltp)
+        oi_ok  = (of.get("oi_change_bias") == "BULL" and direction == "CALL") or \
+                 (of.get("oi_change_bias") == "BEAR" and direction == "PUT")
+        atm_ok = (of.get("atm_bias") == "CALL" and direction == "CALL") or \
+                 (of.get("atm_bias") == "PUT"  and direction == "PUT")
+        score += (5 if oi_ok else 0) + (5 if atm_ok else 0)
+        mp = of.get("max_pain")
+        mp_str = f"{mp:,.0f}" if mp else "—"
+        cond["Options Flow"] = (
+            f"MaxPain {mp_str} | COI {of.get('oi_change_bias','—')} | "
+            f"ATM {of.get('atm_bias','—')} | R {of.get('resistance','—')} / S {of.get('support','—')}"
+        )
+
+    # 3. FII / DII macro flow  (state refreshed hourly)
+    fii_cash  = state.get("fii_net")
+    fii_deriv = state.get("fii_deriv_net")
+    dii_cash  = state.get("dii_net")
+    fii_ok = (fii_cash is not None and fii_cash  > 0 and direction == "CALL") or \
+             (fii_cash is not None and fii_cash  < 0 and direction == "PUT")
+    if fii_ok: score += 4
+    if fii_cash is not None:
+        fd_str = f"{fii_deriv:+,.0f}" if fii_deriv is not None else "—"
+        cond["FII/DII"] = (
+            f"Cash FII {fii_cash:+,.0f} / DII {dii_cash:+,.0f} Cr | "
+            f"Deriv FII {fd_str} Cr"
+        )
+
+    # 4. DOM bid/ask imbalance  (NSE futures depth)
+    _dom_map = {"NIFTY50": "NIFTY", "BANKNIFTY": "BANKNIFTY"}
+    dom_sym = _dom_map.get(name)
+    dom = {}
+    if dom_sym:
+        dom = fetch_dom_imbalance(dom_sym)
+        imb = dom.get("imbalance")
+        dom_ok = (imb is not None and imb >  0.05 and direction == "CALL") or \
+                 (imb is not None and imb < -0.05 and direction == "PUT")
+        if dom_ok: score += 4
+        if imb is not None:
+            cond["DOM"] = (
+                f"Imb {imb:+.2f} | "
+                f"Bid {dom['total_bid_qty']:,} vs Ask {dom['total_ask_qty']:,} | "
+                f"Best {dom['best_bid']}/{dom['best_ask']}"
+            )
+
     score = max(0, min(100, score))
 
     now_ist = datetime.now(IST)
@@ -561,6 +812,10 @@ def analyze(name, cfg):
         "st_dir": st_, "orb_high": orb_h, "orb_low": orb_l,
         "pdh": pdh, "pdl": pdl, "cpr": cpr, "fib": fib, "fib_label": fib_label,
         "time": now_ist.strftime("%H:%M"),
+        # Order flow
+        "vol_delta":    vd,
+        "options_flow": of,
+        "dom":          dom,
     }
 
 # ═══════════════════════════════════════════════════════════════
@@ -756,6 +1011,53 @@ def format_signal(sig):
     for k, v in sig["conditions"].items():
         if   isinstance(v, bool): clines.append(f"  {'✅' if v else '❌'} {k}")
         else:                      clines.append(f"  ℹ️ {k}: {v}")
+
+    # ── Order Flow section ──────────────────────────────────────
+    vd  = sig.get("vol_delta", {})
+    of  = sig.get("options_flow", {})
+    dom = sig.get("dom", {})
+
+    vd_bar = ""
+    if vd.get("buy_vol", 0) + vd.get("sell_vol", 0) > 0:
+        tot = vd["buy_vol"] + vd["sell_vol"]
+        bull_pct = round(vd["buy_vol"] / tot * 10)
+        bear_pct = 10 - bull_pct
+        delta_icon = "🟢" if vd["delta"] > 0 else "🔴" if vd["delta"] < 0 else "⚪"
+        vd_bar = (
+            f"\n🔀 *Volume Delta (Footprint):*\n"
+            f"  {'🟩'*bull_pct}{'🟥'*bear_pct}  {vd['delta_pct']:+.1f}% {delta_icon}\n"
+            f"  Buy {vd['buy_vol']:,} | Sell {vd['sell_vol']:,} | 30m {vd['recent_delta']:+,}"
+        )
+
+    of_lines = ""
+    if of.get("max_pain") or of.get("atm_bias"):
+        mp = of.get("max_pain"); mp_s = f"{mp:,.0f}" if mp else "—"
+        r  = of.get("resistance"); r_s = f"{r:,.0f}" if r else "—"
+        s  = of.get("support");    s_s = f"{s:,.0f}" if s else "—"
+        of_lines = (
+            f"\n📐 *Options Flow:*\n"
+            f"  MaxPain : {mp_s}\n"
+            f"  COI Bias: {of.get('oi_change_bias','—')} | ATM bias: {of.get('atm_bias','—')}\n"
+            f"  CE wall : {r_s} | PE wall : {s_s}"
+        )
+
+    dom_line = ""
+    imb = dom.get("imbalance")
+    if imb is not None:
+        dom_icon = "🟢" if imb > 0.05 else "🔴" if imb < -0.05 else "⚪"
+        dom_line = (
+            f"\n📊 *DOM (Futures Depth):*\n"
+            f"  Imbalance: {imb:+.2f} {dom_icon}\n"
+            f"  Bid qty: {dom.get('total_bid_qty',0):,} | Ask qty: {dom.get('total_ask_qty',0):,}"
+        )
+
+    fii_c = sig["conditions"].get("FII/DII", "")
+    fii_line = f"\n🏦 *FII/DII:* {fii_c}" if fii_c else ""
+
+    order_flow_block = (vd_bar or of_lines or dom_line or fii_line) and (
+        "\n" + vd_bar + of_lines + dom_line + fii_line
+    )
+
     return (
         f"{ri} *{sig['instrument']} — {d_icon} | {sig['rating']}*\n"
         f"📅 {datetime.now(IST).strftime('%d %b %Y %H:%M IST')}\n\n"
@@ -776,8 +1078,9 @@ def format_signal(sig):
         f"  PDH/PDL : {sig['pdh']:,.1f} / {sig['pdl']:,.1f}\n"
         f"  CPR     : {cpr['bottom']:,.1f}–{cpr['top']:,.1f} "
         f"({'Narrow 📈' if cpr['narrow'] else 'Wide 📉'})\n\n"
-        f"🔢 *Fib:* {sig['fib_label']}\n\n"
-        f"📋 *Conditions:*\n" + "\n".join(clines) +
+        f"🔢 *Fib:* {sig['fib_label']}\n"
+        + (order_flow_block if order_flow_block else "") +
+        f"\n\n📋 *Conditions:*\n" + "\n".join(clines) +
         f"\n\n⚠️ _Trade at your own risk._"
     )
 
@@ -796,17 +1099,30 @@ def send_scan_summary(scan_no, time_str, results):
         bar  = "█" * fill + "░" * (10 - fill)
         icon = "🔥" if score>=SCORE_ULTRA else "💪" if score>=SCORE_STRONG else "⚡" if score>=SCORE_MEDIUM else "·"
         tag  = " ✅ *SIGNAL!*" if alerted else ""
+        # Volume delta footprint mini-bar
+        vd = sig.get("vol_delta", {})
+        if vd.get("buy_vol", 0) + vd.get("sell_vol", 0) > 0:
+            tot = vd["buy_vol"] + vd["sell_vol"] or 1
+            bp  = round(vd["buy_vol"] / tot * 5)   # 5-char mini bar
+            vd_mini = f" Δ{'▲'*bp+'▼'*(5-bp)} {vd['delta_pct']:+.0f}%"
+        else:
+            vd_mini = ""
         lines.append(
             f"`{name:<12}` {di} {sig['direction']} {icon} "
-            f"`{score:3d}/100` `[{bar}]` RSI {sig['rsi']:.0f} | {sig['ltp']:,.0f}{tag}"
+            f"`{score:3d}/100` `[{bar}]` RSI {sig['rsi']:.0f} | {sig['ltp']:,.0f}"
+            f"{vd_mini}{tag}"
         )
+
     vix_s = f"{state['vix']:.1f}" if state["vix"] else "—"
     pcr_s = f"{state['pcr']:.2f}" if state["pcr"] else "—"
+    fii_s = f"{state['fii_net']:+,.0f}" if state.get("fii_net") is not None else "—"
+    dii_s = f"{state['dii_net']:+,.0f}" if state.get("dii_net") is not None else "—"
     alerted_any = any(r[4] for r in results)
     hdr = f"🔍 *Scan #{scan_no}* | {time_str} | {'🚨 Signal!' if alerted_any else 'No signal'}"
     send_scan_tg(
         f"{hdr}\n\n" + "\n".join(lines) +
-        f"\n\n📈 VIX `{vix_s}` | PCR `{pcr_s}` | Alerts today: {state['alerts_sent']}"
+        f"\n\n📈 VIX `{vix_s}` | PCR `{pcr_s}` | "
+        f"FII `{fii_s}` DII `{dii_s}` Cr | Alerts: {state['alerts_sent']}"
     )
 
 # ═══════════════════════════════════════════════════════════════
@@ -828,6 +1144,7 @@ def refresh_vix_pcr():
         if pcr_v is not None: state["pcr"] = pcr_v
         state["last_vix_fetch"] = now
         print(f"  [VIX] {state['vix']}   [PCR] {state['pcr']}")
+    refresh_fii_dii()   # FII/DII once-per-hour refresh
 
 def scan():
     if not in_market_hours(): return
