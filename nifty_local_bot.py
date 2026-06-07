@@ -625,6 +625,134 @@ def split_sessions(df):
     prev = df[df.index.date == prev_days[-1]].copy() if prev_days else pd.DataFrame()
     return td, prev
 
+# ── 1-Minute Data & Entry Confirmation ────────────────────────────
+def fetch_1min_ohlcv(ticker: str) -> Optional[pd.DataFrame]:
+    """Fetch last 30 min of 1-min OHLCV for precise entry timing."""
+    for period in ("1d", "2d"):
+        try:
+            tk  = yf.Ticker(ticker)
+            df  = tk.history(period=period, interval="1m", auto_adjust=True)
+            if df is None or df.empty:
+                continue
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df.columns = [c.strip().capitalize() for c in df.columns]
+            if df.index.tz is None:
+                df.index = df.index.tz_localize("UTC").tz_convert(IST)
+            else:
+                df.index = df.index.tz_convert(IST)
+            df = df.dropna(subset=["Close", "High", "Low"])
+            # Only keep today's candles, last 30 min
+            today = datetime.now(IST).date()
+            df = df[df.index.date == today]
+            if len(df) >= 3:
+                return df.tail(30)    # last 30 candles max
+        except Exception as e:
+            print(f"  [1MIN] {ticker} {e}")
+    return None
+
+
+def confirm_1min_entry(sig: dict) -> dict:
+    """
+    After a 5-min STRONG/ULTRA signal, look at the last 5 x 1-min candles
+    and score entry quality across 4 checks.
+
+    Returns:
+        confirmed     : True if ≥ 2 of 4 checks pass
+        checks_met    : int 0-4
+        entry_label   : 'ENTER NOW' | 'WAIT PULLBACK' | 'NO DATA'
+        tight_sl      : tighter SL based on 1-min candle wick (or None)
+        tight_sl_pts  : SL distance in pts
+        pullback_to   : suggested limit-entry price if not confirmed
+        reason        : human-readable check breakdown
+        vol_delta_1m  : 1-min volume delta dict
+    """
+    base = {
+        "confirmed": False, "checks_met": 0, "entry_label": "NO DATA",
+        "tight_sl": None, "tight_sl_pts": None,
+        "pullback_to": None, "reason": "No 1-min data available",
+        "vol_delta_1m": {}
+    }
+
+    df1 = fetch_1min_ohlcv(sig["ticker"])
+    if df1 is None or len(df1) < 3:
+        base["reason"] = "1-min feed unavailable (NSE/yfinance)"
+        return base
+
+    recent = df1.tail(5).copy()
+    direction = sig["direction"]
+    ltp_now   = float(recent["Close"].iloc[-1])
+    last_c    = recent.iloc[-1]
+
+    checks = {}
+
+    # ① Candle direction — last 1-min candle body must agree
+    candle_bull = last_c["Close"] > last_c["Open"]
+    checks["Candle dir"] = (
+        (candle_bull and direction == "CALL") or
+        (not candle_bull and direction == "PUT")
+    )
+
+    # ② 1-min Volume Delta — buy/sell pressure on recent candles
+    vd1 = calc_volume_delta(recent)
+    checks["Vol Δ"] = (
+        (vd1["bias"] == "BULL" and direction == "CALL") or
+        (vd1["bias"] == "BEAR" and direction == "PUT")
+    )
+
+    # ③ Price vs 1-min VWAP
+    vwap1 = calc_vwap(recent)
+    checks["VWAP 1m"] = (
+        (ltp_now > vwap1 and direction == "CALL") or
+        (ltp_now < vwap1 and direction == "PUT")
+    )
+
+    # ④ EMA-9 slope on 1-min (last 2 values)
+    ema9_1m = calc_ema(recent["Close"], min(9, len(recent)))
+    slope_up = float(ema9_1m.iloc[-1]) > float(ema9_1m.iloc[-2])
+    checks["EMA9 slope"] = (
+        (slope_up and direction == "CALL") or
+        (not slope_up and direction == "PUT")
+    )
+
+    checks_met = sum(checks.values())
+    confirmed  = checks_met >= 2
+
+    # ── Tight SL from 1-min wick ──────────────────────────────────
+    tight_sl = tight_sl_pts = None
+    if direction == "CALL":
+        wick_sl = round(float(recent["Low"].min()) - 5, 1)
+        pts = round(ltp_now - wick_sl, 1)
+    else:
+        wick_sl = round(float(recent["High"].max()) + 5, 1)
+        pts = round(wick_sl - ltp_now, 1)
+    # Only suggest if genuinely tighter (< 70% of 5-min SL)
+    if pts < sig["sl_pts"] * 0.70 and pts > 0:
+        tight_sl, tight_sl_pts = wick_sl, pts
+
+    # ── Pullback entry suggestion if not confirmed ─────────────────
+    pullback_to = None
+    if not confirmed:
+        if direction == "CALL":
+            pullback_to = round(max(vwap1, sig["vwap"]) - 2, 1)
+        else:
+            pullback_to = round(min(vwap1, sig["vwap"]) + 2, 1)
+
+    # ── Human-readable check breakdown ────────────────────────────
+    parts = [f"{'✅' if v else '❌'} {k}" for k, v in checks.items()]
+    entry_label = "ENTER NOW" if confirmed else "WAIT PULLBACK"
+
+    return {
+        "confirmed":    confirmed,
+        "checks_met":   checks_met,
+        "entry_label":  entry_label,
+        "tight_sl":     tight_sl,
+        "tight_sl_pts": tight_sl_pts,
+        "pullback_to":  pullback_to,
+        "reason":       " | ".join(parts),
+        "vol_delta_1m": vd1,
+    }
+
 def get_orb(df_today):
     if df_today.empty: return 0.0, 0.0
     end = df_today.index[0].replace(
@@ -1058,6 +1186,33 @@ def format_signal(sig):
         "\n" + vd_bar + of_lines + dom_line + fii_line
     )
 
+    # ── 1-min Entry Confirmation block ──────────────────────────────
+    ec = sig.get("entry_confirm")
+    if ec:
+        el_icon = "🟢" if ec["confirmed"] else "🟡"
+        ec_block = (
+            f"\n\n⏱ *1-Min Entry Confirmation:* {el_icon} *{ec['entry_label']}*"
+            f"  ({ec['checks_met']}/4 checks)\n"
+            f"  {ec['reason']}\n"
+        )
+        if ec["tight_sl"] is not None:
+            ec_block += (
+                f"  🎯 Tight SL   : {ec['tight_sl']:,.1f}  "
+                f"(−{ec['tight_sl_pts']} pts vs 5m −{sig['sl_pts']} pts)\n"
+                f"  📈 Tight Target: {round(sig['ltp'] + ec['tight_sl_pts']*3, 1):,.1f}  "
+                f"(+{round(ec['tight_sl_pts']*3,1)} pts  R:R 1:3)\n"
+            )
+        if ec["pullback_to"] is not None:
+            ec_block += f"  ⏳ Wait for pullback to ≈ {ec['pullback_to']:,.1f}\n"
+        vd1 = ec.get("vol_delta_1m", {})
+        if vd1.get("buy_vol", 0) + vd1.get("sell_vol", 0) > 0:
+            ec_block += (
+                f"  📊 1m Δ Vol : {vd1['bias']} {vd1['delta_pct']:+.1f}% "
+                f"(B:{vd1['buy_vol']:,} / S:{vd1['sell_vol']:,})\n"
+            )
+    else:
+        ec_block = ""
+
     return (
         f"{ri} *{sig['instrument']} — {d_icon} | {sig['rating']}*\n"
         f"📅 {datetime.now(IST).strftime('%d %b %Y %H:%M IST')}\n\n"
@@ -1079,7 +1234,8 @@ def format_signal(sig):
         f"  CPR     : {cpr['bottom']:,.1f}–{cpr['top']:,.1f} "
         f"({'Narrow 📈' if cpr['narrow'] else 'Wide 📉'})\n\n"
         f"🔢 *Fib:* {sig['fib_label']}\n"
-        + (order_flow_block if order_flow_block else "") +
+        + (order_flow_block if order_flow_block else "")
+        + ec_block +
         f"\n\n📋 *Conditions:*\n" + "\n".join(clines) +
         f"\n\n⚠️ _Trade at your own risk._"
     )
@@ -1190,6 +1346,14 @@ def scan():
                             last["direction"] == sig["direction"] and
                             sig["score"] < last["score"] + 10)
                 if not suppress:
+                    # ── 1-min entry confirmation (STRONG/ULTRA only) ──
+                    if sig["score"] >= SCORE_STRONG:
+                        ec = confirm_1min_entry(sig)
+                        sig["entry_confirm"] = ec
+                        print(f"      [1MIN] {ec['entry_label']} "
+                              f"({ec['checks_met']}/4) {ec['reason']}")
+                    else:
+                        sig["entry_confirm"] = None
                     send_signal_tg(format_signal(sig))
                     log_excel(sig)
                     sb_push_signal(sig)
