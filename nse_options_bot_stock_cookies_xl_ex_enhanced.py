@@ -2945,6 +2945,9 @@ if __name__ == "__main__":
         f"_Commands: STATUS · WIN · LOSS · SKIP · TUNE_"
     )
 
+    # Push initial "bot alive" status to dashboard immediately (before first scan)
+    sb_update_status()
+
     # Start background Telegram command listener
     start_telegram_listener()
 
