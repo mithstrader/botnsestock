@@ -298,7 +298,10 @@ def sb_push_signal(sig):
 def sb_push_scan(scan_no, results):
     """Push per-scan summary to Supabase scans table."""
     client = get_sb()
-    if client is None: return
+    if client is None:
+        if scan_no == 1:   # warn only on first scan to avoid spam
+            print("  [SUPABASE] ⚠️  client is None — check URL & SERVICE_KEY")
+        return
     try:
         now = datetime.now(IST)
         row = {
@@ -320,9 +323,22 @@ def sb_push_scan(scan_no, results):
                 fp = sig.get("footprint")
                 if fp:
                     footprint[name] = fp
-        if footprint:
-            row["footprint_data"] = footprint
+
+        # Push core scan first (always safe)
         client.table("scans").insert(row).execute()
+        print(f"  [SUPABASE] ✅ scan #{scan_no} pushed")
+
+        # Push footprint separately — column may not exist yet on older DBs
+        if footprint:
+            try:
+                client.table("scans") \
+                      .update({"footprint_data": footprint}) \
+                      .eq("scan_number", scan_no) \
+                      .eq("scan_date", now.strftime("%Y-%m-%d")) \
+                      .execute()
+            except Exception as fe:
+                print(f"  [SUPABASE] footprint update skipped: {fe}")
+
     except Exception as e:
         print(f"  [SUPABASE] push_scan error: {e}")
 
@@ -347,6 +363,8 @@ def sb_update_status(status="running"):
         if status == "sleeping":
             row["next_session_at"] = _next_market_open().isoformat()
         client.table("bot_status").upsert(row).execute()
+        if state["scan_count"] <= 1:   # print only on startup
+            print(f"  [SUPABASE] ✅ bot_status updated ({status})")
     except Exception as e:
         print(f"  [SUPABASE] update_status error: {e}")
 
