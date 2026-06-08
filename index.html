@@ -171,6 +171,34 @@ main{padding:22px 24px;max-width:1500px;margin:0 auto}
 .bb-stat-val{font-size:18px;font-weight:800;color:var(--text2);line-height:1}
 .bb-divider{width:1px;height:36px;background:var(--border)}
 
+/* ── Stock bot status bar (compact, top of Stocks tab) ───────── */
+.sb-bar{
+  display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;
+  padding:11px 18px;border-radius:12px;border:1px solid;margin-bottom:18px;
+  backdrop-filter:blur(8px);
+}
+.sb-bar.running   {background:rgba(16,185,129,.045);border-color:rgba(16,185,129,.28)}
+.sb-bar.sleeping  {background:rgba(245,158,11,.045);border-color:rgba(245,158,11,.25)}
+.sb-bar.stopped,
+.sb-bar.connecting{background:rgba(255,255,255,.018);border-color:rgba(255,255,255,.07)}
+.sb-bar-left{display:flex;align-items:center;gap:10px}
+.sb-dot2{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.sb-bar.running   .sb-dot2{background:#10b981;box-shadow:0 0 8px #10b981;animation:bbpulse 1.6s ease-in-out infinite}
+.sb-bar.sleeping  .sb-dot2{background:#f59e0b;box-shadow:0 0 6px #f59e0b;animation:bbpulse 2.8s ease-in-out infinite}
+.sb-bar.stopped   .sb-dot2,
+.sb-bar.connecting .sb-dot2{background:#4d6a8a}
+.sb-title{font-size:11.5px;font-weight:800;letter-spacing:.45px}
+.sb-bar.running   .sb-title{color:#10b981}
+.sb-bar.sleeping  .sb-title{color:#f59e0b}
+.sb-bar.stopped   .sb-title,
+.sb-bar.connecting .sb-title{color:#4d6a8a}
+.sb-sub{font-size:11px;color:var(--muted2)}
+.sb-bar-right{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+.sb-stat{font-size:11px;color:var(--muted);display:flex;flex-direction:column;align-items:center;gap:2px}
+.sb-stat-lbl{font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+.sb-stat-val{font-size:14px;font-weight:800;color:var(--text2);line-height:1}
+.sb-div{width:1px;height:28px;background:var(--border)}
+
 /* ── Setup banner ──────────────────────────────────────────────── */
 .setup{
   background:rgba(59,130,246,.07);border:1px solid rgba(59,130,246,.25);
@@ -562,6 +590,24 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 <!-- ══════ STOCKS ═════════════════════════════════════════════════ -->
 <div id="p-stocks" class="panel">
+
+  <!-- Stock bot running status -->
+  <div id="stock-bot-bar" class="sb-bar connecting">
+    <div class="sb-bar-left">
+      <span class="sb-dot2"></span>
+      <div>
+        <div class="sb-title" id="sbb-title">📡 STOCK BOT</div>
+        <div class="sb-sub"  id="sbb-sub">Checking status…</div>
+      </div>
+    </div>
+    <div class="sb-bar-right">
+      <div class="sb-stat"><span class="sb-stat-lbl">Last Scan</span><span class="sb-stat-val" id="sbb-last">—</span></div>
+      <div class="sb-div"></div>
+      <div class="sb-stat"><span class="sb-stat-lbl">Scans Today</span><span class="sb-stat-val" id="sbb-scans">—</span></div>
+      <div class="sb-stat"><span class="sb-stat-lbl">Signals</span><span class="sb-stat-val" id="sbb-sigs">—</span></div>
+    </div>
+  </div>
+
   <div class="stats" style="margin-bottom:22px">
     <div class="sc"><div class="sc-lbl">Stocks Scanned</div><div id="sk0" class="sc-val">—</div></div>
     <div class="sc"><div class="sc-lbl">Signals Today</div><div id="sk1" class="sc-val">—</div></div>
@@ -859,6 +905,39 @@ function setStatus(row){
   }
   document.getElementById('lupd').textContent=
     'Updated '+new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',hour12:true})
+
+  // ── Stock bot status bar (reads stock_* columns from same row) ─
+  setStockBotStatus(row)
+}
+
+function setStockBotStatus(row){
+  const bar=document.getElementById('stock-bot-bar')
+  if(!bar) return
+  const s=(row.stock_status||'stopped').toLowerCase()
+  bar.className=`sb-bar ${s}`
+  const titles={
+    running:   '🟢 STOCK BOT RUNNING',
+    sleeping:  '😴 STOCK BOT SLEEPING',
+    stopped:   '🔴 STOCK BOT OFFLINE',
+    connecting:'📡 STOCK BOT'
+  }
+  document.getElementById('sbb-title').textContent=titles[s]||'🔴 STOCK BOT OFFLINE'
+  const sub=document.getElementById('sbb-sub')
+  if(row.stock_last_scan){
+    document.getElementById('sbb-last').textContent=
+      new Date(row.stock_last_scan).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',hour12:true})
+    if(s==='running')        sub.textContent='Scanning every 5 min'
+    else if(s==='sleeping')  sub.textContent='Waiting for market hours (09:15 IST)'
+    else{
+      const ago=_fmtAgo(row.stock_last_scan)
+      sub.textContent=ago?`Last seen ${ago}`:'Not started today'
+    }
+  } else {
+    sub.textContent='Not started today'
+    document.getElementById('sbb-last').textContent='—'
+  }
+  document.getElementById('sbb-scans').textContent=row.stock_scan_count??'—'
+  document.getElementById('sbb-sigs').textContent =row.stock_alerts_today??'—'
 }
 
 function setCard(key,score,dir,rsi,ltp){

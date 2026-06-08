@@ -1425,25 +1425,28 @@ def sb_push_scan(stocks, activity, session):
 
 
 def sb_update_status():
-    """Update the bot_status row (id=1) with current stock bot state."""
+    """Update the bot_status row (id=1) with stock bot state only.
+
+    Deliberately does NOT overwrite scan_count / alerts_today / last_scan_at /
+    status — those belong to the index/options bot.  Stock-specific columns
+    are prefixed with stock_* so the two bots coexist on the same row.
+    """
     sb = _get_sb()
     if not sb:
         return
     ist = ist_now()
     is_open = is_market_open()
     row = {
-        'status'             : 'running' if is_open else 'sleeping',
-        'scan_count'         : state.get('scan_count', 0),
-        'alerts_today'       : state.get('alerts_sent', 0),
+        'stock_status'       : 'running' if is_open else 'sleeping',
         'vix'                : _market_context.get('vix'),
         'pcr'                : _market_context.get('pcr'),
-        'last_scan_at'       : ist.isoformat(),
         'stock_scan_count'   : state.get('scan_count', 0),
         'stock_alerts_today' : state.get('alerts_sent', 0),
         'stock_last_scan'    : ist.isoformat(),
     }
     try:
         sb.table('bot_status').upsert({**row, 'id': 1}).execute()
+        print(f"[SUPABASE] Stock status → {row['stock_status']}, scan #{row['stock_scan_count']}")
     except Exception as e:
         print(f"[SUPABASE] Status update failed: {e}")
 
