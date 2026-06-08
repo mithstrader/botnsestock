@@ -1652,6 +1652,17 @@ def main():
 
     _init_excel()
 
+    # ── Supabase status check ─────────────────────────────────
+    sb_ok = bool(SUPABASE_URL and SUPABASE_SERVICE_KEY
+                 and "YOUR_PROJECT" not in SUPABASE_URL)
+    if sb_ok:
+        print(f"  📡 Supabase  : ✅ {SUPABASE_URL[:40]}…")
+    else:
+        print("  📡 Supabase  : ⚠️  NOT configured — dashboard will show no data")
+        print("                 Set SUPABASE_URL and SUPABASE_SERVICE_KEY")
+        print("                 in nifty_local_bot.py (lines ~39-40)")
+    print()
+
     # ── Ask whether to use Telegram ──────────────────────────
     global TELEGRAM_ENABLED
     try:
