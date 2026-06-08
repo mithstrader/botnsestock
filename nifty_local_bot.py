@@ -674,29 +674,65 @@ def split_sessions(df):
     return td, prev
 
 # ── 1-Minute Data & Entry Confirmation ────────────────────────────
+def _safe_to_ist(df: pd.DataFrame) -> pd.DataFrame:
+    """Robust index → IST conversion that bypasses the yfinance
+    'NoneType has no attribute timezone' bug on 1-min NSE data."""
+    try:
+        idx = pd.to_datetime(df.index)          # force proper DatetimeIndex
+        if idx.tz is None:
+            idx = idx.tz_localize("UTC")
+        df.index = idx.tz_convert(IST)
+    except Exception:
+        try:
+            # Last-resort: stringify and re-parse
+            df.index = (pd.to_datetime([str(x) for x in df.index])
+                          .tz_localize("UTC").tz_convert(IST))
+        except Exception:
+            pass
+    return df
+
+
 def fetch_1min_ohlcv(ticker: str) -> Optional[pd.DataFrame]:
-    """Fetch last 30 min of 1-min OHLCV for precise entry timing."""
+    """Fetch last 30 min of 1-min OHLCV.
+    Tries yf.download() first (avoids NSE timezone bug), then Ticker.history()."""
+    today = datetime.now(IST).date()
+
+    def _clean(df):
+        if df is None or df.empty:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df.columns = [c.strip().capitalize() for c in df.columns]
+        if "Close" not in df.columns:
+            return None
+        df = _safe_to_ist(df)
+        df = df.dropna(subset=["Close", "High", "Low"])
+        df = df[df.index.date == today]
+        return df.tail(30) if len(df) >= 3 else None
+
+    # Method 1: yf.download (more stable for NSE 1-min)
+    try:
+        df = yf.download(ticker, period="1d", interval="1m",
+                         progress=False, auto_adjust=True, threads=False)
+        out = _clean(df)
+        if out is not None:
+            return out
+    except Exception as e:
+        if "timezone" not in str(e).lower():
+            print(f"  [1MIN download] {ticker}: {e}")
+
+    # Method 2: Ticker.history fallback
     for period in ("1d", "2d"):
         try:
             tk  = yf.Ticker(ticker)
             df  = tk.history(period=period, interval="1m", auto_adjust=True)
-            if df is None or df.empty:
-                continue
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            df.columns = [c.strip().capitalize() for c in df.columns]
-            if df.index.tz is None:
-                df.index = df.index.tz_localize("UTC").tz_convert(IST)
-            else:
-                df.index = df.index.tz_convert(IST)
-            df = df.dropna(subset=["Close", "High", "Low"])
-            # Only keep today's candles, last 30 min
-            today = datetime.now(IST).date()
-            df = df[df.index.date == today]
-            if len(df) >= 3:
-                return df.tail(30)    # last 30 candles max
+            out = _clean(df)
+            if out is not None:
+                return out
         except Exception as e:
-            print(f"  [1MIN] {ticker} {e}")
+            if "timezone" not in str(e).lower():
+                print(f"  [1MIN history {period}] {ticker}: {e}")
+
     return None
 
 
@@ -835,36 +871,52 @@ def wait_for_1min_confirm(sig: dict) -> dict:
     )
     print(f"  [CONFIRM] Waiting up to {CONFIRM_TIMEOUT_MIN}m …")
 
-    attempt = 0
-    last_ec = None
+    attempt        = 0
+    last_ec        = None
+    consec_unavail = 0   # consecutive "data unavailable" results
+
     while datetime.now(IST) < deadline:
         attempt += 1
-        ec = confirm_1min_entry(sig)
+        ec      = confirm_1min_entry(sig)
         last_ec = ec
-        print(f"    [1MIN #{attempt}] {ec['checks_met']}/5  {ec['reason'].replace(chr(10),' | ')}")
+        print(f"    [1MIN #{attempt}] {ec['checks_met']}/5  "
+              f"{ec['reason'].replace(chr(10),' | ')}")
 
+        # ── confirmed → fire immediately ─────────────────────────
         if ec["confirmed"]:
             ec["timed_out"] = False
             return ec
+
+        # ── data feed broken → don't waste full timeout ──────────
+        if "unavailable" in ec.get("reason", "").lower():
+            consec_unavail += 1
+            if consec_unavail >= 2:
+                print(f"  [1MIN] Feed unavailable after 2 tries — bypassing gate")
+                ec["timed_out"]        = False
+                ec["data_unavailable"] = True
+                ec["entry_label"]      = "⚠️ 1-MIN DATA UNAVAILABLE"
+                return ec
+        else:
+            consec_unavail = 0
 
         remaining = (deadline - datetime.now(IST)).total_seconds()
         if remaining > 30:
             time.sleep(30)
         else:
-            break   # < 30 s left — do one last check outside loop
+            break
 
-    # Final check right at deadline
+    # Final check at deadline
     ec = confirm_1min_entry(sig)
     if ec["confirmed"]:
         ec["timed_out"] = False
         return ec
 
-    # Timeout
+    # Genuine timeout (checks failed, data was available)
     if last_ec is None:
         last_ec = ec
-    last_ec["timed_out"]    = True
-    last_ec["entry_label"]  = "⛔ TIMEOUT — SIGNAL SKIPPED"
-    last_ec["confirmed"]    = False
+    last_ec["timed_out"]   = True
+    last_ec["entry_label"] = "⛔ TIMEOUT — SIGNAL SKIPPED"
+    last_ec["confirmed"]   = False
     return last_ec
 
 def get_orb(df_today):
@@ -1332,6 +1384,13 @@ def format_signal(sig):
                 f"  📊 1m Δ: {vd1['bias']} {vd1['delta_pct']:+.1f}% "
                 f"(B:{vd1['buy_vol']:,} / S:{vd1['sell_vol']:,})\n"
             )
+    elif ec and ec.get("data_unavailable"):
+        # yfinance 1-min feed broken — signal sent on 5-min basis
+        ec_block = (
+            f"\n\n⚠️ *1-Min Gate: Feed Unavailable*\n"
+            f"  Signal sent on 5-min indicators only.\n"
+            f"  Use 5-min SL: {sig['sl_level']:,.1f} (−{sig['sl_pts']} pts)\n"
+        )
     elif ec and ec.get("timed_out"):
         # Should not reach format_signal on timeout+SKIP, but handle gracefully
         ec_block = (
@@ -1475,8 +1534,17 @@ def scan():
                         ec = wait_for_1min_confirm(sig)
                         sig["entry_confirm"] = ec
 
-                        if ec["timed_out"] and SKIP_UNCONFIRMED:
-                            # No clean entry found — don't trade
+                        if ec.get("data_unavailable"):
+                            # yfinance 1-min feed broken → send on 5-min basis
+                            print(f"      ⚠️ 1-min feed unavailable — sending on 5-min basis")
+                            send_scan_tg(
+                                f"⚠️ *{name}* {sig['direction']} Score {sig['score']} "
+                                f"— 1-min feed unavailable. Sending on 5-min basis."
+                            )
+                            # fall through to fire signal below
+
+                        elif ec["timed_out"] and SKIP_UNCONFIRMED:
+                            # Checks ran but market didn't confirm — skip
                             send_scan_tg(
                                 f"⛔ *{name}* {sig['direction']} Score {sig['score']} "
                                 f"— 1-min never confirmed in {CONFIRM_TIMEOUT_MIN}m "
