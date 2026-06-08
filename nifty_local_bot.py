@@ -36,8 +36,8 @@ CHAT_ID        = os.environ.get("CHAT_ID",        "")
 # ── Supabase (cloud backend) ──────────────────────────────────
 # Get these from: Supabase → Project Settings → API
 # Set as environment variables on Railway, or paste directly for local use.
-SUPABASE_URL         = os.environ.get("SUPABASE_URL",         "")
-SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")  # service_role key
+SUPABASE_URL         = os.environ.get("SUPABASE_URL",         "https://ngvxrmgrapgyksvfqkva.supabase.co")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5ndnhybWdyYXBneWtzdmZxa3ZhIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MDU5MzEwNSwiZXhwIjoyMDk2MTY5MTA1fQ.IHIAtCpVMAjkFP8YnU4oqtLE7QrTIy8iYwXCbca4C9U")  # service_role key
 
 # ── Excel (local logging, optional) ──────────────────────────
 _default_excel = r"C:\NSE_Bot\logs" if platform.system() == "Windows" else "/tmp/nse_bot_logs"
