@@ -1753,6 +1753,14 @@ def main():
             print(f"\n[MAIN-LOOP ERROR] {exc}")
             time.sleep(30)          # brief pause, then keep running
 
+    # ── Graceful shutdown: mark bot as stopped in Supabase ──────
+    try:
+        sb_update_status("stopped")
+        print("  [SUPABASE] ✅ bot_status → stopped")
+    except Exception:
+        pass
+    print("[STOP] Bot exited cleanly.")
+
 
 if __name__ == "__main__":
     main()

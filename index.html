@@ -838,7 +838,12 @@ function _fmtAgo(ts){
 
 function _updateBannerSub(){
   if(!_lastStatusRow) return
-  const s = (_lastStatusRow.status||'stopped').toLowerCase()
+  // Apply same staleness guard as setStatus
+  let s = (_lastStatusRow.status||'stopped').toLowerCase()
+  if(s !== 'stopped' && _lastStatusRow.updated_at){
+    const staleMin = (Date.now() - new Date(_lastStatusRow.updated_at)) / 60000
+    if(staleMin > 15) s = 'stopped'
+  }
   const sub = document.getElementById('bb-sub')
   if(!sub) return
   if(s === 'running'){
@@ -859,7 +864,13 @@ function _updateBannerSub(){
 
 function setStatus(row){
   _lastStatusRow = row
-  const s=(row.status||'stopped').toLowerCase()
+  // Staleness guard — if updated_at >15 min old, treat as stopped
+  // (handles hard-close / power-off where bot can't send a goodbye)
+  let s = (row.status||'stopped').toLowerCase()
+  if(s !== 'stopped' && row.updated_at){
+    const staleMin = (Date.now() - new Date(row.updated_at)) / 60000
+    if(staleMin > 15) s = 'stopped'
+  }
 
   // ── Header badge ──────────────────────────────────────────────
   const b=document.getElementById('sbadge')
