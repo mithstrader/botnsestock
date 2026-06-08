@@ -946,6 +946,10 @@ def fetch_dom_pressure(symbol):
     url = f"https://www.nseindia.com/api/quote-equity?symbol={symbol}"
     try:
         r = _nse_session.get(url, timeout=8)
+        if r.status_code in (401, 403):
+            print(f"[DOM] {symbol}: {r.status_code} — refreshing NSE session and retrying...")
+            _warm_nse_session()
+            r = _nse_session.get(url, timeout=8)
         r.raise_for_status()
         d = r.json()
 
@@ -1059,8 +1063,9 @@ def check_velocity_spikes(stocks):
         if sym in state['alerted_today']:
             continue
 
-        direction = 'CALL' if dc > 0 else 'PUT'
-        ltp       = s['ltp']
+        direction    = 'CALL' if dc > 0 else 'PUT'
+        s['direction'] = direction   # store so excel_log_signals / notify_signal can read it
+        ltp          = s['ltp']
         sl        = round(ltp * (1 - SL_PCT / 100) if direction == 'CALL' else ltp * (1 + SL_PCT / 100), 2)
         target    = round(ltp * (1 + TARGET_PCT / 100) if direction == 'CALL' else ltp * (1 - TARGET_PCT / 100), 2)
         dir_icon  = '🟢' if direction == 'CALL' else '🔴'
@@ -1507,12 +1512,22 @@ _nse_session.headers.update({
     "X-Requested-With": "XMLHttpRequest",
 })
 
+_nse_last_warm = 0.0   # epoch seconds; guards against repeated re-warm storms
+
 
 def _warm_nse_session():
     """
     NSE requires a browser-like session visit before API calls.
     Visit homepage + pre-open page + option-chain page to get all cookies.
+
+    Has a 5-minute cooldown so that a burst of 403s (one per stock) only
+    triggers a single re-warm cycle instead of 30 back-to-back re-visits.
     """
+    import time as _time
+    global _nse_last_warm
+    if _time.time() - _nse_last_warm < 300:   # 5-minute cooldown
+        return
+    _nse_last_warm = _time.time()
     pages = [
         "https://www.nseindia.com/",
         "https://www.nseindia.com/market-data/pre-open-market-cm-and-emerge-market",
@@ -2897,8 +2912,10 @@ if __name__ == "__main__":
     schedule.every(SCAN_INTERVAL_MIN).minutes.do(scan_job)
     schedule.every().day.at("10:05").do(eod_job)   # 3:35 PM IST = 10:05 UTC
     schedule.every().day.at("03:40").do(premarket_scan)  # 9:10 AM IST
+    schedule.every(45).minutes.do(_warm_nse_session)     # keep NSE cookies fresh
 
     # Warm NSE + Trendlyne sessions before first API call
+    # (_nse_last_warm starts at 0.0 so the cooldown never blocks this first call)
     _warm_nse_session()
     _warm_trendlyne_session()
 
