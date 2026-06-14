@@ -368,6 +368,34 @@ def sb_update_status(status="running"):
     except Exception as e:
         print(f"  [SUPABASE] update_status error: {e}")
 
+def sb_push_options_snapshot(snap: dict):
+    """Insert one timestamped row per 3-min options snapshot so the web app
+    can render the whole day's series. Each snapshot is stored separately;
+    the top-4 contracts go into a jsonb 'contracts' column.
+
+    Expected table 'options_snapshots' (create once in Supabase):
+        snap_date date, snap_time text, snap_ts timestamptz,
+        data_ts text, underlying text, spot float8,
+        contracts jsonb
+    """
+    client = get_sb()
+    if client is None or not snap.get("ok"):
+        return
+    try:
+        now = datetime.now(IST)
+        client.table("options_snapshots").insert({
+            "snap_date":  now.strftime("%Y-%m-%d"),
+            "snap_time":  now.strftime("%H:%M"),
+            "snap_ts":    now.isoformat(),
+            "data_ts":    snap.get("data_ts"),
+            "underlying": snap.get("underlying"),
+            "spot":       float(snap["spot"]) if snap.get("spot") is not None else None,
+            "contracts":  snap.get("top", []),
+        }).execute()
+        print(f"  [SUPABASE] ✅ options snapshot pushed ({len(snap.get('top', []))} contracts)")
+    except Exception as e:
+        print(f"  [SUPABASE] push_options_snapshot error: {e}")
+
 # ═══════════════════════════════════════════════════════════════
 #  DATA FETCHING
 # ═══════════════════════════════════════════════════════════════
@@ -519,6 +547,70 @@ def fetch_options_flow(symbol: str = "NIFTY", ltp: float = None) -> dict:
         }
     except Exception as e:
         print(f"  [OPTIONS FLOW {symbol}] {e}")
+        return empty
+
+# ── Options snapshot: top-N most active contracts by volume ───────
+def fetch_options_snapshot(limit: int = 20, top_n: int = 4) -> dict:
+    """Fetch the NSE 'most active index options' snapshot and return the
+    top-N contracts by traded volume (numberOfContractsTraded).
+
+    Endpoint payload has two lists: 'volume' (ranked by contracts traded)
+    and 'value' (ranked by turnover). We use the 'volume' list only.
+
+    Returns:
+        {
+          "ok":            bool,
+          "data_ts":       "12-Jun-2026 15:30:00" | None,
+          "underlying":    "NIFTY" | None,
+          "spot":          23622.9 | None,
+          "top":           [ {contract dict}, ... ]   # length <= top_n
+        }
+    """
+    empty = {"ok": False, "data_ts": None, "underlying": None,
+             "spot": None, "top": []}
+    try:
+        r = _nse_session().get(
+            f"https://www.nseindia.com/api/snapshot-derivatives-equity"
+            f"?index=options&limit={limit}",
+            timeout=15)
+        if r.status_code != 200:
+            print(f"  [OPT SNAPSHOT] HTTP {r.status_code}")
+            return empty
+        js  = r.json()
+        vol = js.get("volume", {}) or {}
+        rows = vol.get("data", []) or []
+        if not rows:
+            return empty
+        # Rank by traded volume, descending (list is usually pre-sorted)
+        rows = sorted(rows,
+                      key=lambda d: d.get("numberOfContractsTraded", 0) or 0,
+                      reverse=True)
+        top = []
+        for d in rows[:top_n]:
+            top.append({
+                "underlying":   d.get("underlying"),
+                "identifier":   d.get("identifier"),
+                "option_type":  d.get("optionType"),          # "Call"/"Put"
+                "strike":       d.get("strikePrice"),
+                "expiry":       d.get("expiryDate"),
+                "ltp":          d.get("lastPrice"),
+                "pchange":      d.get("pChange"),
+                "volume":       d.get("numberOfContractsTraded"),
+                "oi":           d.get("openInterest"),
+                "turnover":     d.get("totalTurnover"),
+                "premium_turnover": d.get("premiumTurnover"),
+                "spot":         d.get("underlyingValue"),
+            })
+        first = top[0] if top else {}
+        return {
+            "ok":         bool(top),
+            "data_ts":    vol.get("timestamp"),
+            "underlying": first.get("underlying"),
+            "spot":       first.get("spot"),
+            "top":        top,
+        }
+    except Exception as e:
+        print(f"  [OPT SNAPSHOT] {e}")
         return empty
 
 # ── Volume Delta (footprint approximation from OHLCV) ─────────────
@@ -1483,6 +1575,64 @@ def send_scan_summary(scan_no, time_str, results):
     )
 
 # ═══════════════════════════════════════════════════════════════
+#  OPTIONS SNAPSHOT (top-4 by volume, every 3 min)
+# ═══════════════════════════════════════════════════════════════
+
+def _lakh(n):
+    """Format a large count compactly in lakhs/crores."""
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return "—"
+    if abs(n) >= 1e7:
+        return f"{n/1e7:.2f}Cr"
+    if abs(n) >= 1e5:
+        return f"{n/1e5:.2f}L"
+    return f"{n:,.0f}"
+
+def format_options_snapshot(snap: dict) -> str:
+    now_str = datetime.now(IST).strftime("%d %b %Y %H:%M IST")
+    spot    = snap.get("spot")
+    spot_s  = f"{spot:,.1f}" if spot is not None else "—"
+    hdr = (
+        f"🔊 *Most Active Options — Volume Leaders*\n"
+        f"📅 {now_str}"
+        + (f" | data {snap['data_ts']}" if snap.get("data_ts") else "") + "\n"
+        f"📍 {snap.get('underlying','—')} spot *{spot_s}*\n"
+    )
+    medals = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+    lines  = []
+    for i, c in enumerate(snap.get("top", [])):
+        ot   = "CE" if str(c.get("option_type", "")).lower().startswith("c") else "PE"
+        pch  = c.get("pchange")
+        arrow = "▲" if (pch or 0) >= 0 else "▼"
+        pch_s = f"{arrow}{abs(pch):.1f}%" if pch is not None else "—"
+        ltp   = c.get("ltp")
+        ltp_s = f"₹{ltp:,.2f}" if ltp is not None else "—"
+        lines.append(
+            f"\n{medals[i] if i < len(medals) else '·'} *{c.get('strike')} {ot}*  {ltp_s}  {pch_s}\n"
+            f"     Vol {_lakh(c.get('volume'))} | OI {_lakh(c.get('oi'))}"
+        )
+    if not lines:
+        return ""
+    return hdr + "".join(lines)
+
+def options_snapshot_job():
+    """Fetch the top-4 most-active options by volume, alert Bot 2, and push
+    one timestamped row to Supabase. Runs every 3 min, all day (no market-hours
+    gate). NSE returns the last available snapshot outside session hours; the
+    no-data path is handled gracefully below."""
+    snap = fetch_options_snapshot(limit=20, top_n=4)
+    if not snap.get("ok"):
+        print("  [OPT SNAPSHOT] no data this cycle")
+        return
+    msg = format_options_snapshot(snap)
+    if msg:
+        send_signal_tg(msg)
+    sb_push_options_snapshot(snap)
+    print(f"  [OPT SNAPSHOT] {len(snap['top'])} contracts → Bot 2 + Supabase")
+
+# ═══════════════════════════════════════════════════════════════
 #  MAIN SCAN LOOP
 # ═══════════════════════════════════════════════════════════════
 
@@ -1698,9 +1848,14 @@ def main():
     # Schedule recurring scans; EOD detection is done inside the while loop
     schedule.every(SCAN_INTERVAL).minutes.do(scan)
 
+    # Top-4 most-active options snapshot → Bot 2 + Supabase, every 3 min
+    schedule.every(3).minutes.do(options_snapshot_job)
+
     # First scan immediately if already in market hours
     if in_market_hours():
         scan()
+    # Options snapshot fires immediately on startup (runs all day)
+    options_snapshot_job()
 
     eod_sent_date  = None   # date on which EOD summary was last sent
     active_date    = None   # date of the current / most recent trading session
