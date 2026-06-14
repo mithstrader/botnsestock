@@ -415,6 +415,8 @@ td{padding:10px 14px;white-space:nowrap;vertical-align:middle}
 .opt-cols{display:flex;gap:16px;flex-wrap:wrap;margin-top:22px}
 .opt-col{flex:1 1 380px;min-width:300px;display:flex;flex-direction:column}
 .opt-h3{margin:0 0 10px;font-size:15px;color:var(--muted2)}
+.optg{color:var(--muted);font-size:11px;font-weight:700}
+.optgrp td{border-top:2px solid var(--border)}
 .opt-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius2);padding:16px 18px;position:relative;overflow:hidden}
 .opt-card.ce{border-left:3px solid var(--call)}
 .opt-card.pe{border-left:3px solid var(--put)}
@@ -794,11 +796,11 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
       </div>
     </div>
     <div class="opt-col">
-      <h3 class="opt-h3">🥇 Top-volume contract over time</h3>
+      <h3 class="opt-h3">🥇 Top 4 by volume over time</h3>
       <div class="twrap">
         <table><thead><tr>
-          <th>Time</th><th>Spot</th><th>Contract</th><th>LTP</th><th>Chg</th><th>Vol</th><th>OI</th>
-        </tr></thead><tbody id="opt-lead-tb"><tr><td colspan="7" class="load">Loading…</td></tr></tbody></table>
+          <th>Time</th><th>Spot</th><th>#</th><th>Contract</th><th>LTP</th><th>Chg</th><th>Vol</th><th>OI</th>
+        </tr></thead><tbody id="opt-lead-tb"><tr><td colspan="8" class="load">Loading…</td></tr></tbody></table>
       </div>
     </div>
   </div>
@@ -1817,7 +1819,7 @@ function renderOptCards(snap){
 function optMini(c){
   if(!c) return '—'
   const ce=optIsCE(c), cls=ce?'ce':'pe', tlbl=ce?'CE':'PE'
-  return `<span class="opt-mini"><b class="${cls}">${c.strike??'—'} ${tlbl}</b><br>${fmtR(c.ltp)} · ${optLakh(c.volume)}</span>`
+  return `<span class="opt-mini"><b class="${cls}">${c.strike??'—'} ${tlbl}</b><br>${fmtR(c.ltp)}<br>V ${optLakh(c.volume)} · OI ${optLakh(c.oi)}</span>`
 }
 
 function renderOptSeries(rows){
@@ -1841,25 +1843,36 @@ function renderOptSeries(rows){
 function renderOptLeader(rows){
   const tb=document.getElementById('opt-lead-tb')
   if(!rows.length){
-    tb.innerHTML='<tr><td colspan="7"><div class="empty"><div class="empty-icon">🥇</div><div class="empty-text">No snapshots on this date</div></div></td></tr>'
+    tb.innerHTML='<tr><td colspan="8"><div class="empty"><div class="empty-icon">🥇</div><div class="empty-text">No snapshots on this date</div></div></td></tr>'
     return
   }
-  tb.innerHTML=rows.map(r=>{
-    const c=(r.contracts||[])[0]
-    if(!c) return `<tr><td style="color:var(--muted2)">${r.snap_time||'—'}</td><td colspan="6" style="color:var(--muted)">—</td></tr>`
-    const ce=optIsCE(c), cls=ce?'ce':'pe', tlbl=ce?'CE':'PE'
-    const pch=c.pchange, up=(pch==null?true:pch>=0)
-    const pchS=pch==null?'—':(up?'▲':'▼')+Math.abs(pch).toFixed(1)+'%'
-    return `<tr>
-      <td style="color:var(--muted2)">${r.snap_time||'—'}</td>
-      <td style="color:var(--muted2)">${r.spot!=null?Number(r.spot).toLocaleString('en-IN',{minimumFractionDigits:1,maximumFractionDigits:1}):'—'}</td>
-      <td><b class="opt-mini ${cls}">${c.strike??'—'} ${tlbl}</b></td>
-      <td>${fmtR(c.ltp)}</td>
-      <td style="color:${up?'var(--call)':'var(--put)'};font-weight:700">${pchS}</td>
-      <td>${optLakh(c.volume)}</td>
-      <td style="color:var(--muted2)">${optLakh(c.oi)}</td>
-    </tr>`
-  }).join('')
+  let html=''
+  rows.forEach(r=>{
+    const cs=(r.contracts||[]).slice(0,4)
+    const n=Math.max(cs.length,1)
+    const spot=r.spot!=null?Number(r.spot).toLocaleString('en-IN',{minimumFractionDigits:1,maximumFractionDigits:1}):'—'
+    for(let i=0;i<n;i++){
+      const c=cs[i]
+      html+=`<tr class="${i===0?'optgrp':''}">`
+      html+=`<td style="color:var(--muted2)">${i===0?(r.snap_time||'—'):''}</td>`
+      html+=`<td style="color:var(--muted2)">${i===0?spot:''}</td>`
+      html+=`<td class="optg">#${i+1}</td>`
+      if(c){
+        const ce=optIsCE(c), cls=ce?'ce':'pe', tlbl=ce?'CE':'PE'
+        const pch=c.pchange, up=(pch==null?true:pch>=0)
+        const pchS=pch==null?'—':(up?'▲':'▼')+Math.abs(pch).toFixed(1)+'%'
+        html+=`<td><b class="opt-mini ${cls}">${c.strike??'—'} ${tlbl}</b></td>`
+            +`<td>${fmtR(c.ltp)}</td>`
+            +`<td style="color:${up?'var(--call)':'var(--put)'};font-weight:700">${pchS}</td>`
+            +`<td>${optLakh(c.volume)}</td>`
+            +`<td style="color:var(--muted2)">${optLakh(c.oi)}</td>`
+      } else {
+        html+=`<td colspan="5" style="color:var(--muted)">—</td>`
+      }
+      html+=`</tr>`
+    }
+  })
+  tb.innerHTML=html
 }
 
 async function loadOptions(force){
