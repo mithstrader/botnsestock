@@ -1628,9 +1628,9 @@ def options_snapshot_job():
         return
     msg = format_options_snapshot(snap)
     if msg:
-        send_signal_tg(msg)
+        send_scan_tg(msg)
     sb_push_options_snapshot(snap)
-    print(f"  [OPT SNAPSHOT] {len(snap['top'])} contracts → Bot 2 + Supabase")
+    print(f"  [OPT SNAPSHOT] {len(snap['top'])} contracts → Bot 1 + Supabase")
 
 # ═══════════════════════════════════════════════════════════════
 #  MAIN SCAN LOOP
