@@ -412,6 +412,9 @@ td{padding:10px 14px;white-space:nowrap;vertical-align:middle}
 
 /* ── Options tab ────────────────────────────────────────────────── */
 .opt-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:18px}
+.opt-cols{display:flex;gap:16px;flex-wrap:wrap;margin-top:22px}
+.opt-col{flex:1 1 380px;min-width:300px;display:flex;flex-direction:column}
+.opt-h3{margin:0 0 10px;font-size:15px;color:var(--muted2)}
 .opt-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius2);padding:16px 18px;position:relative;overflow:hidden}
 .opt-card.ce{border-left:3px solid var(--call)}
 .opt-card.pe{border-left:3px solid var(--put)}
@@ -779,13 +782,25 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
     </div>
   </div>
 
-  <!-- Whole-day series -->
-  <h3 style="margin:22px 0 10px;font-size:15px;color:var(--muted2)">📜 Whole-day snapshots (every 3 min)</h3>
-  <div class="twrap">
-    <table><thead><tr>
-      <th>Time</th><th>Spot</th>
-      <th>#1</th><th>#2</th><th>#3</th><th>#4</th>
-    </tr></thead><tbody id="opt-tb"><tr><td colspan="6" class="load">Loading…</td></tr></tbody></table>
+  <!-- Whole-day series — two tables side by side, both time-descending -->
+  <div class="opt-cols">
+    <div class="opt-col">
+      <h3 class="opt-h3">📜 Whole-day snapshots (every 3 min)</h3>
+      <div class="twrap">
+        <table><thead><tr>
+          <th>Time</th><th>Spot</th>
+          <th>#1</th><th>#2</th><th>#3</th><th>#4</th>
+        </tr></thead><tbody id="opt-tb"><tr><td colspan="6" class="load">Loading…</td></tr></tbody></table>
+      </div>
+    </div>
+    <div class="opt-col">
+      <h3 class="opt-h3">🥇 Top-volume contract over time</h3>
+      <div class="twrap">
+        <table><thead><tr>
+          <th>Time</th><th>Spot</th><th>Contract</th><th>LTP</th><th>Chg</th><th>Vol</th><th>OI</th>
+        </tr></thead><tbody id="opt-lead-tb"><tr><td colspan="7" class="load">Loading…</td></tr></tbody></table>
+      </div>
+    </div>
   </div>
 
   <div class="fp-note">
@@ -1822,6 +1837,31 @@ function renderOptSeries(rows){
   }).join('')
 }
 
+/* Part 2: the #1 (highest-volume) contract at each snapshot, time-descending */
+function renderOptLeader(rows){
+  const tb=document.getElementById('opt-lead-tb')
+  if(!rows.length){
+    tb.innerHTML='<tr><td colspan="7"><div class="empty"><div class="empty-icon">🥇</div><div class="empty-text">No snapshots on this date</div></div></td></tr>'
+    return
+  }
+  tb.innerHTML=rows.map(r=>{
+    const c=(r.contracts||[])[0]
+    if(!c) return `<tr><td style="color:var(--muted2)">${r.snap_time||'—'}</td><td colspan="6" style="color:var(--muted)">—</td></tr>`
+    const ce=optIsCE(c), cls=ce?'ce':'pe', tlbl=ce?'CE':'PE'
+    const pch=c.pchange, up=(pch==null?true:pch>=0)
+    const pchS=pch==null?'—':(up?'▲':'▼')+Math.abs(pch).toFixed(1)+'%'
+    return `<tr>
+      <td style="color:var(--muted2)">${r.snap_time||'—'}</td>
+      <td style="color:var(--muted2)">${r.spot!=null?Number(r.spot).toLocaleString('en-IN',{minimumFractionDigits:1,maximumFractionDigits:1}):'—'}</td>
+      <td><b class="opt-mini ${cls}">${c.strike??'—'} ${tlbl}</b></td>
+      <td>${fmtR(c.ltp)}</td>
+      <td style="color:${up?'var(--call)':'var(--put)'};font-weight:700">${pchS}</td>
+      <td>${optLakh(c.volume)}</td>
+      <td style="color:var(--muted2)">${optLakh(c.oi)}</td>
+    </tr>`
+  }).join('')
+}
+
 async function loadOptions(force){
   if(!sb) return
   const btn=document.getElementById('opt-refresh')
@@ -1833,6 +1873,7 @@ async function loadOptions(force){
   const latest=rows[0]||null
   renderOptCards(latest)
   renderOptSeries(rows)
+  renderOptLeader(rows)
   const meta=document.getElementById('opt-meta')
   if(latest){
     meta.textContent=`${rows.length} snapshots · latest ${latest.snap_time||''} · ${latest.underlying||''} `
