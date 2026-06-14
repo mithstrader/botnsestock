@@ -1633,6 +1633,230 @@ def options_snapshot_job():
     print(f"  [OPT SNAPSHOT] {len(snap['top'])} contracts → Bot 1 + Supabase")
 
 # ═══════════════════════════════════════════════════════════════
+#  OPTION-CHAIN ANALYSIS (direction read + OTM strike picks)
+# ═══════════════════════════════════════════════════════════════
+# NSE option-chain-indices covers NSE indices only.
+CHAIN_INSTRUMENTS = {
+    "NIFTY":     {"strike_step": 50},
+    "BANKNIFTY": {"strike_step": 100},
+    "FINNIFTY":  {"strike_step": 50},
+}
+CHAIN_OTM_STEPS = 2   # how many strikes OTM to consider for momentum buys
+
+def _strike_pick(strike, opt, d):
+    """Score a candidate strike for buying: liquidity + tight spread + sane IV."""
+    pre = "ce_" if opt == "CE" else "pe_"
+    vol = d[pre + "vol"]; oi = d[pre + "oi"]; ltp = d[pre + "ltp"]
+    bid = d[pre + "bid"]; ask = d[pre + "ask"]; iv = d[pre + "iv"]
+    spread     = (ask - bid) if (ask and bid) else None
+    spread_pct = (spread / ltp * 100) if (spread and ltp) else None
+    score = 0.0
+    score += min(vol / 1000.0, 40)          # volume / liquidity (cap 40)
+    score += min(oi / 5000.0, 20)           # open interest (cap 20)
+    if   spread_pct is not None and spread_pct < 2: score += 20
+    elif spread_pct is not None and spread_pct < 5: score += 10
+    if   iv and iv < 25: score += 10        # not over-paying on premium
+    elif iv and iv < 35: score += 5
+    return {"strike": strike, "type": opt, "ltp": round(ltp, 2),
+            "vol": int(vol), "oi": int(oi), "iv": round(iv, 1) if iv else None,
+            "spread_pct": round(spread_pct, 1) if spread_pct is not None else None,
+            "score": round(score)}
+
+def analyze_option_chain(symbol, strike_step, otm_steps=CHAIN_OTM_STEPS):
+    """Full option-chain read for one index.
+    Returns direction (BULLISH/BEARISH/RANGE), confidence, PCR, max pain,
+    support/resistance, most-active strikes and OTM strike suggestions."""
+    empty = {"ok": False, "symbol": symbol}
+    try:
+        r = _nse_session().get(
+            f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}",
+            timeout=15)
+        if r.status_code != 200:
+            print(f"  [CHAIN {symbol}] HTTP {r.status_code}")
+            return empty
+        recs     = r.json().get("records", {})
+        expiries = recs.get("expiryDates", [])
+        data     = recs.get("data", [])
+        spot     = recs.get("underlyingValue") or 0
+        if not expiries or not data or not spot:
+            return empty
+        nearest = expiries[0]
+        strikes = {}
+        for rec in data:
+            if rec.get("expiryDate") != nearest:
+                continue
+            sp = rec.get("strikePrice")
+            ce = rec.get("CE", {}) or {}
+            pe = rec.get("PE", {}) or {}
+            strikes[sp] = {
+                "ce_oi":  ce.get("openInterest", 0) or 0,
+                "ce_coi": ce.get("changeinOpenInterest", 0) or 0,
+                "ce_vol": ce.get("totalTradedVolume", 0) or 0,
+                "ce_iv":  ce.get("impliedVolatility", 0) or 0,
+                "ce_ltp": ce.get("lastPrice", 0) or 0,
+                "ce_bid": ce.get("bidprice", 0) or 0,
+                "ce_ask": ce.get("askPrice", 0) or 0,
+                "pe_oi":  pe.get("openInterest", 0) or 0,
+                "pe_coi": pe.get("changeinOpenInterest", 0) or 0,
+                "pe_vol": pe.get("totalTradedVolume", 0) or 0,
+                "pe_iv":  pe.get("impliedVolatility", 0) or 0,
+                "pe_ltp": pe.get("lastPrice", 0) or 0,
+                "pe_bid": pe.get("bidprice", 0) or 0,
+                "pe_ask": pe.get("askPrice", 0) or 0,
+            }
+        if not strikes:
+            return empty
+
+        atm = min(strikes, key=lambda s: abs(s - spot))
+        tot_ce_oi  = sum(d["ce_oi"]  for d in strikes.values())
+        tot_pe_oi  = sum(d["pe_oi"]  for d in strikes.values())
+        tot_ce_vol = sum(d["ce_vol"] for d in strikes.values())
+        tot_pe_vol = sum(d["pe_vol"] for d in strikes.values())
+        tot_ce_coi = sum(d["ce_coi"] for d in strikes.values())
+        tot_pe_coi = sum(d["pe_coi"] for d in strikes.values())
+        pcr_oi  = round(tot_pe_oi  / tot_ce_oi,  2) if tot_ce_oi  else None
+        pcr_vol = round(tot_pe_vol / tot_ce_vol, 2) if tot_ce_vol else None
+        max_pain = _calc_max_pain(
+            {s: {"ce_oi": d["ce_oi"], "pe_oi": d["pe_oi"]} for s, d in strikes.items()})
+
+        below = {s: d for s, d in strikes.items() if s <= spot}
+        above = {s: d for s, d in strikes.items() if s >= spot}
+        support    = max(below, key=lambda s: below[s]["pe_oi"]) if below else None
+        resistance = max(above, key=lambda s: above[s]["ce_oi"]) if above else None
+
+        # ── direction read (positioning-based) ──────────────────────
+        bull = bear = 0
+        reasons = []
+        if pcr_oi is not None:
+            if   pcr_oi >= 1.2: bull += 1; reasons.append(f"PCR(OI) {pcr_oi} bullish")
+            elif pcr_oi <= 0.8: bear += 1; reasons.append(f"PCR(OI) {pcr_oi} bearish")
+        if tot_pe_coi > tot_ce_coi:
+            bull += 1; reasons.append("PE writing (support building)")
+        elif tot_ce_coi > tot_pe_coi:
+            bear += 1; reasons.append("CE writing (resistance building)")
+        if max_pain and max_pain > spot:
+            bull += 1; reasons.append(f"MaxPain {max_pain:.0f} > spot")
+        elif max_pain and max_pain < spot:
+            bear += 1; reasons.append(f"MaxPain {max_pain:.0f} < spot")
+        if pcr_vol is not None:
+            if   pcr_vol >= 1.2: bull += 1; reasons.append(f"PCR(vol) {pcr_vol} bullish")
+            elif pcr_vol <= 0.8: bear += 1; reasons.append(f"PCR(vol) {pcr_vol} bearish")
+        if   bull > bear: direction = "BULLISH"
+        elif bear > bull: direction = "BEARISH"
+        else:             direction = "RANGE"
+        total_pts  = bull + bear
+        confidence = round(abs(bull - bear) / total_pts * 100) if total_pts else 0
+
+        ce_active = max(strikes, key=lambda s: strikes[s]["ce_vol"])
+        pe_active = max(strikes, key=lambda s: strikes[s]["pe_vol"])
+
+        # ── OTM-momentum strike suggestions aligned with direction ──
+        suggestions = []
+        if direction == "BULLISH":
+            for i in range(1, otm_steps + 1):
+                sp = atm + i * strike_step
+                if sp in strikes:
+                    suggestions.append(_strike_pick(sp, "CE", strikes[sp]))
+        elif direction == "BEARISH":
+            for i in range(1, otm_steps + 1):
+                sp = atm - i * strike_step
+                if sp in strikes:
+                    suggestions.append(_strike_pick(sp, "PE", strikes[sp]))
+        suggestions = sorted(suggestions, key=lambda x: x["score"], reverse=True)[:2]
+
+        return {
+            "ok": True, "symbol": symbol, "spot": round(float(spot), 2),
+            "expiry": nearest, "atm": atm,
+            "pcr_oi": pcr_oi, "pcr_vol": pcr_vol, "max_pain": max_pain,
+            "support": support, "resistance": resistance,
+            "ce_active": ce_active, "pe_active": pe_active,
+            "direction": direction, "confidence": confidence,
+            "reasons": reasons, "suggestions": suggestions,
+        }
+    except Exception as e:
+        print(f"  [CHAIN {symbol}] {e}")
+        return empty
+
+def format_chain_analysis(a):
+    """Telegram message for one index chain read (scan bot)."""
+    if not a.get("ok"):
+        return ""
+    dicon = {"BULLISH": "🟢 BULLISH", "BEARISH": "🔴 BEARISH", "RANGE": "⚪ RANGE"}.get(a["direction"], a["direction"])
+    mp = a.get("max_pain"); mp_s = f"{mp:,.0f}" if mp else "—"
+    sup = a.get("support"); res = a.get("resistance")
+    lines = [
+        f"🧭 *{a['symbol']} Option-Chain Read*  ({a['expiry']})",
+        f"📍 Spot *{a['spot']:,.1f}* | ATM {a['atm']}",
+        f"🧭 *{dicon}*  ({a['confidence']}% conf)",
+        f"📊 PCR OI {a.get('pcr_oi','—')} | Vol {a.get('pcr_vol','—')} | MaxPain {mp_s}",
+        f"🧱 Support {sup if sup else '—'}  |  Resistance {res if res else '—'}",
+        f"🔥 Active CE {a['ce_active']} | PE {a['pe_active']}",
+    ]
+    if a["reasons"]:
+        lines.append("  • " + "\n  • ".join(a["reasons"]))
+    sug = a.get("suggestions") or []
+    if sug:
+        lines.append("🎯 *Suggested OTM (momentum):*")
+        for s in sug:
+            sp_s = f"{s['spread_pct']}%" if s["spread_pct"] is not None else "—"
+            iv_s = f"{s['iv']}" if s["iv"] is not None else "—"
+            lines.append(
+                f"  {s['strike']} {s['type']}  ₹{s['ltp']}  "
+                f"(Vol {s['vol']:,} · OI {s['oi']:,} · IV {iv_s} · spr {sp_s} · score {s['score']})")
+    else:
+        lines.append("🎯 No directional OTM pick (range / thin data)")
+    lines.append("_Positioning signal, not financial advice._")
+    return "\n".join(lines)
+
+def sb_push_chain_analysis(a):
+    """One row per index per cycle into chain_analysis table (for web)."""
+    client = get_sb()
+    if client is None or not a.get("ok"):
+        return
+    try:
+        now = datetime.now(IST)
+        client.table("chain_analysis").insert({
+            "scan_date":  now.strftime("%Y-%m-%d"),
+            "scan_time":  now.strftime("%H:%M"),
+            "ts":         now.isoformat(),
+            "symbol":     a["symbol"],
+            "spot":       a["spot"],
+            "expiry":     a["expiry"],
+            "atm":        a["atm"],
+            "pcr_oi":     a.get("pcr_oi"),
+            "pcr_vol":    a.get("pcr_vol"),
+            "max_pain":   a.get("max_pain"),
+            "support":    a.get("support"),
+            "resistance": a.get("resistance"),
+            "ce_active":  a.get("ce_active"),
+            "pe_active":  a.get("pe_active"),
+            "direction":  a["direction"],
+            "confidence": a["confidence"],
+            "reasons":    a.get("reasons", []),
+            "suggestions": a.get("suggestions", []),
+        }).execute()
+    except Exception as e:
+        print(f"  [SUPABASE] push_chain_analysis error: {e}")
+
+def chain_analysis_job():
+    """Analyse NIFTY/BANKNIFTY/FINNIFTY chains → scan bot + Supabase.
+    Runs every 5 min during market hours (chain data is only live then)."""
+    if not in_market_hours():
+        return
+    for sym, cfg in CHAIN_INSTRUMENTS.items():
+        a = analyze_option_chain(sym, cfg["strike_step"])
+        if not a.get("ok"):
+            print(f"  [CHAIN {sym}] no data this cycle")
+            continue
+        msg = format_chain_analysis(a)
+        if msg:
+            send_scan_tg(msg)
+        sb_push_chain_analysis(a)
+        print(f"  [CHAIN {sym}] {a['direction']} {a['confidence']}% → scan bot + Supabase")
+        time.sleep(1)   # be gentle on NSE between symbols
+
+
+# ═══════════════════════════════════════════════════════════════
 #  MAIN SCAN LOOP
 # ═══════════════════════════════════════════════════════════════
 
@@ -1848,14 +2072,19 @@ def main():
     # Schedule recurring scans; EOD detection is done inside the while loop
     schedule.every(SCAN_INTERVAL).minutes.do(scan)
 
-    # Top-4 most-active options snapshot → Bot 2 + Supabase, every 3 min
+    # Top-4 most-active options snapshot → scan bot + Supabase, every 3 min
     schedule.every(3).minutes.do(options_snapshot_job)
+
+    # Option-chain analysis (NIFTY/BANKNIFTY/FINNIFTY) → scan bot + Supabase, every 5 min
+    schedule.every(5).minutes.do(chain_analysis_job)
 
     # First scan immediately if already in market hours
     if in_market_hours():
         scan()
     # Options snapshot fires immediately on startup (runs all day)
     options_snapshot_job()
+    # Option-chain analysis fires once on startup if market is open
+    chain_analysis_job()
 
     eod_sent_date  = None   # date on which EOD summary was last sent
     active_date    = None   # date of the current / most recent trading session

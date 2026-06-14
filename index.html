@@ -417,6 +417,26 @@ td{padding:10px 14px;white-space:nowrap;vertical-align:middle}
 .opt-h3{margin:0 0 10px;font-size:15px;color:var(--muted2)}
 .optg{color:var(--muted);font-size:11px;font-weight:700}
 .optgrp td{border-top:2px solid var(--border)}
+.chain-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-bottom:8px}
+.chain-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius2);padding:16px 18px;border-top:3px solid var(--border)}
+.chain-card.bull{border-top-color:var(--call)}
+.chain-card.bear{border-top-color:var(--put)}
+.chain-card.range{border-top-color:#f59e0b}
+.chain-top{display:flex;justify-content:space-between;align-items:baseline}
+.chain-sym{font-size:17px;font-weight:800}
+.chain-dir{font-size:12px;font-weight:800;padding:3px 9px;border-radius:7px}
+.chain-dir.bull{background:rgba(16,185,129,.15);color:var(--call)}
+.chain-dir.bear{background:rgba(244,63,94,.15);color:var(--put)}
+.chain-dir.range{background:rgba(245,158,11,.15);color:#f59e0b}
+.chain-spot{font-size:12px;color:var(--muted2);margin-top:2px}
+.chain-row{display:flex;justify-content:space-between;font-size:12px;color:var(--muted2);margin-top:8px}
+.chain-row b{color:var(--text);font-weight:700}
+.chain-sug{margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)}
+.chain-sug-h{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
+.chain-pick{font-size:13px;font-weight:700;margin-top:3px}
+.chain-pick.ce{color:var(--call)}.chain-pick.pe{color:var(--put)}
+.chain-pick small{font-weight:500;color:var(--muted2)}
+.chain-note{font-size:10.5px;color:var(--muted);margin-top:8px}
 .opt-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius2);padding:16px 18px;position:relative;overflow:hidden}
 .opt-card.ce{border-left:3px solid var(--call)}
 .opt-card.pe{border-left:3px solid var(--put)}
@@ -781,6 +801,15 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
     <div class="empty" style="padding:40px 0;grid-column:1/-1">
       <div class="empty-icon">🔊</div>
       <div class="empty-text">Loading latest options snapshot…</div>
+    </div>
+  </div>
+
+  <!-- Option-chain read & suggested strikes (per index) -->
+  <h3 class="opt-h3" style="margin-top:22px">🧭 Option-chain read &amp; suggested strikes</h3>
+  <div class="chain-grid" id="chain-grid">
+    <div class="empty" style="padding:30px 0;grid-column:1/-1">
+      <div class="empty-icon">🧭</div>
+      <div class="empty-text">Loading option-chain analysis…</div>
     </div>
   </div>
 
@@ -1556,6 +1585,8 @@ function startRealtime(){
         })
     .on('postgres_changes',{event:'INSERT',schema:'public',table:'options_snapshots'},
         ()=>{ if(document.getElementById('p-options').classList.contains('active')) loadOptions() })
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'chain_analysis'},
+        ()=>{ if(document.getElementById('p-options').classList.contains('active')) loadChain() })
     .subscribe()
 }
 
@@ -1875,6 +1906,52 @@ function renderOptLeader(rows){
   tb.innerHTML=html
 }
 
+function renderChain(rows){
+  const box=document.getElementById('chain-grid')
+  if(!box) return
+  // latest row per symbol (rows already ts-descending)
+  const seen={}, latest=[]
+  ;(rows||[]).forEach(r=>{ if(!seen[r.symbol]){ seen[r.symbol]=1; latest.push(r) } })
+  const order={NIFTY:0,BANKNIFTY:1,FINNIFTY:2}
+  latest.sort((a,b)=>(order[a.symbol]??9)-(order[b.symbol]??9))
+  if(!latest.length){
+    box.innerHTML='<div class="empty" style="padding:30px 0;grid-column:1/-1"><div class="empty-icon">🧭</div><div class="empty-text">No chain analysis yet — run the bot during market hours</div></div>'
+    return
+  }
+  const dcls=d=>d==='BULLISH'?'bull':d==='BEARISH'?'bear':'range'
+  const dico=d=>d==='BULLISH'?'🟢 BULLISH':d==='BEARISH'?'🔴 BEARISH':'⚪ RANGE'
+  box.innerHTML=latest.map(r=>{
+    const c=dcls(r.direction)
+    const sug=(r.suggestions||[]).map(s=>{
+      const cls=s.type==='CE'?'ce':'pe'
+      const sp=s.spread_pct!=null?`spr ${s.spread_pct}%`:''
+      const iv=s.iv!=null?`IV ${s.iv}`:''
+      return `<div class="chain-pick ${cls}">${s.strike} ${s.type} · ₹${s.ltp}
+        <small>(Vol ${optLakh(s.vol)} · OI ${optLakh(s.oi)}${iv?' · '+iv:''}${sp?' · '+sp:''} · score ${s.score})</small></div>`
+    }).join('')
+    return `<div class="chain-card ${c}">
+      <div class="chain-top"><span class="chain-sym">${r.symbol}</span>
+        <span class="chain-dir ${c}">${dico(r.direction)} ${r.confidence||0}%</span></div>
+      <div class="chain-spot">Spot ${r.spot!=null?Number(r.spot).toLocaleString('en-IN'):'—'} · ATM ${r.atm??'—'} · exp ${r.expiry||'—'} · ${r.scan_time||''}</div>
+      <div class="chain-row"><span>PCR OI <b>${r.pcr_oi??'—'}</b> · Vol <b>${r.pcr_vol??'—'}</b></span><span>MaxPain <b>${r.max_pain!=null?Number(r.max_pain).toLocaleString('en-IN'):'—'}</b></span></div>
+      <div class="chain-row"><span>🧱 Sup <b>${r.support??'—'}</b> · Res <b>${r.resistance??'—'}</b></span><span>🔥 CE <b>${r.ce_active??'—'}</b> · PE <b>${r.pe_active??'—'}</b></span></div>
+      <div class="chain-sug">
+        <div class="chain-sug-h">🎯 Suggested OTM (momentum)</div>
+        ${sug||'<div style="color:var(--muted);font-size:12px">No directional pick (range / thin data)</div>'}
+      </div>
+      <div class="chain-note">Positioning signal, not financial advice.</div>
+    </div>`
+  }).join('')
+}
+
+async function loadChain(){
+  if(!sb) return
+  const d=document.getElementById('optd').value||today()
+  const {data}=await sb.from('chain_analysis').select('*')
+    .eq('scan_date',d).order('ts',{ascending:false})
+  renderChain(data||[])
+}
+
 async function loadOptions(force){
   if(!sb) return
   const btn=document.getElementById('opt-refresh')
@@ -1887,6 +1964,7 @@ async function loadOptions(force){
   renderOptCards(latest)
   renderOptSeries(rows)
   renderOptLeader(rows)
+  loadChain()
   const meta=document.getElementById('opt-meta')
   if(latest){
     meta.textContent=`${rows.length} snapshots · latest ${latest.snap_time||''} · ${latest.underlying||''} `
