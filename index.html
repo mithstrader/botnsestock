@@ -410,6 +410,24 @@ td{padding:10px 14px;white-space:nowrap;vertical-align:middle}
 .fp-note{font-size:11px;color:var(--muted);margin-top:12px;padding:10px 14px;background:var(--surf2);border-radius:8px;border-left:3px solid var(--accent)}
 #fp-canvas{display:block;width:100%}
 
+/* ── Options tab ────────────────────────────────────────────────── */
+.opt-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:18px}
+.opt-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius2);padding:16px 18px;position:relative;overflow:hidden}
+.opt-card.ce{border-left:3px solid var(--call)}
+.opt-card.pe{border-left:3px solid var(--put)}
+.opt-rank{position:absolute;top:10px;right:12px;font-size:11px;font-weight:800;color:var(--muted)}
+.opt-strike{font-size:22px;font-weight:800;line-height:1}
+.opt-type{font-size:12px;font-weight:700;padding:2px 8px;border-radius:6px;margin-left:6px;vertical-align:middle}
+.opt-type.ce{background:rgba(16,185,129,.15);color:var(--call)}
+.opt-type.pe{background:rgba(244,63,94,.15);color:var(--put)}
+.opt-ltp{font-size:15px;font-weight:700;margin-top:10px}
+.opt-chg{font-size:12px;font-weight:700;margin-left:6px}
+.opt-chg.up{color:var(--call)}.opt-chg.dn{color:var(--put)}
+.opt-metrics{display:flex;gap:16px;margin-top:12px;font-size:12px;color:var(--muted2)}
+.opt-metrics b{display:block;color:var(--text);font-size:14px;font-weight:700}
+.opt-mini{font-size:11px;line-height:1.4}
+.opt-mini .ce{color:var(--call)}.opt-mini .pe{color:var(--put)}
+
 /* ── Toast ──────────────────────────────────────────────────────── */
 #toasts{position:fixed;top:110px;right:18px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none;max-width:320px}
 .toast{
@@ -489,6 +507,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   <button class="tbtn" data-tab="signals">📢 Signals</button>
   <button class="tbtn" data-tab="analytics">📊 Analytics</button>
   <button class="tbtn" data-tab="footprint">🦶 Footprint</button>
+  <button class="tbtn" data-tab="options">🔊 Options</button>
   <button class="tbtn" data-tab="scanlog">🔍 Scan Log</button>
 </div>
 
@@ -743,6 +762,38 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
   </div>
 </div>
 
+<!-- ══════ OPTIONS (most active by volume) ════════════════════════ -->
+<div id="p-options" class="panel">
+  <div class="frow">
+    <button class="btn pri" id="opt-refresh" onclick="loadOptions(true)">🔄 Fetch latest</button>
+    <input type="date" id="optd">
+    <button class="btn" onclick="document.getElementById('optd').value='';loadOptions(true)">Today</button>
+    <span id="opt-meta" class="info-txt"></span>
+  </div>
+
+  <!-- Top-4 cards (latest snapshot) -->
+  <div class="opt-cards" id="opt-cards">
+    <div class="empty" style="padding:40px 0;grid-column:1/-1">
+      <div class="empty-icon">🔊</div>
+      <div class="empty-text">Loading latest options snapshot…</div>
+    </div>
+  </div>
+
+  <!-- Whole-day series -->
+  <h3 style="margin:22px 0 10px;font-size:15px;color:var(--muted2)">📜 Whole-day snapshots (every 3 min)</h3>
+  <div class="twrap">
+    <table><thead><tr>
+      <th>Time</th><th>Spot</th>
+      <th>#1</th><th>#2</th><th>#3</th><th>#4</th>
+    </tr></thead><tbody id="opt-tb"><tr><td colspan="6" class="load">Loading…</td></tr></tbody></table>
+  </div>
+
+  <div class="fp-note">
+    🔊 <b>Most active index options by traded volume</b> — top 4 contracts pushed by the bot every 3 minutes.
+    The browser can't call NSE directly, so this view reads the same data the bot stores in Supabase.
+  </div>
+</div>
+
 <!-- ══════ SCAN LOG ═══════════════════════════════════════════════ -->
 <div id="p-scanlog" class="panel">
   <div class="frow">
@@ -820,6 +871,7 @@ document.querySelectorAll('.tbtn').forEach(b=>b.addEventListener('click',()=>{
   if(t==='scanlog')   loadScans()
   if(t==='stocks')    loadStocks()
   if(t==='footprint') loadFootprint()
+  if(t==='options')   loadOptions()
 }))
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -924,7 +976,12 @@ function setStatus(row){
 function setStockBotStatus(row){
   const bar=document.getElementById('stock-bot-bar')
   if(!bar) return
-  const s=(row.stock_status||'stopped').toLowerCase()
+  let s=(row.stock_status||'stopped').toLowerCase()
+  // Stale guard: DB says 'running' but last scan > 15 min ago → treat as offline
+  if(s==='running' && row.stock_last_scan){
+    const minsAgo=(Date.now()-new Date(row.stock_last_scan))/60000
+    if(minsAgo>15) s='stopped'
+  }
   bar.className=`sb-bar ${s}`
   const titles={
     running:   '🟢 STOCK BOT RUNNING',
@@ -1480,6 +1537,8 @@ function startRealtime(){
           updateStockStatus(r)
           if(document.getElementById('p-stocks').classList.contains('active')) loadStockScans()
         })
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'options_snapshots'},
+        ()=>{ if(document.getElementById('p-options').classList.contains('active')) loadOptions() })
     .subscribe()
 }
 
@@ -1702,6 +1761,85 @@ async function loadFootprint(){
     .limit(1)
   if(data?.[0]?.footprint_data) _fpData = data[0].footprint_data
   renderFootprint()
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   OPTIONS TAB — most-active by volume (top 4, every 3 min)
+═══════════════════════════════════════════════════════════════════ */
+/* Compact large counts → lakh / crore (mirrors the bot's _lakh) */
+function optLakh(n){
+  if(n==null) return '—'
+  n=Number(n)
+  if(Math.abs(n)>=1e7) return (n/1e7).toFixed(2)+'Cr'
+  if(Math.abs(n)>=1e5) return (n/1e5).toFixed(2)+'L'
+  return n.toLocaleString('en-IN')
+}
+function optIsCE(c){ return String(c.option_type||'').toLowerCase().startsWith('c') }
+
+function renderOptCards(snap){
+  const box=document.getElementById('opt-cards')
+  const top=(snap&&snap.contracts)||[]
+  if(!top.length){
+    box.innerHTML='<div class="empty" style="padding:40px 0;grid-column:1/-1"><div class="empty-icon">🔊</div><div class="empty-text">No options snapshot yet — run the bot</div></div>'
+    return
+  }
+  box.innerHTML=top.map((c,i)=>{
+    const ce=optIsCE(c), cls=ce?'ce':'pe', tlbl=ce?'CE':'PE'
+    const pch=c.pchange, up=(pch==null?true:pch>=0)
+    const pchS=pch==null?'—':(up?'▲':'▼')+Math.abs(pch).toFixed(1)+'%'
+    return `<div class="opt-card ${cls}">
+      <span class="opt-rank">#${i+1}</span>
+      <div><span class="opt-strike">${c.strike??'—'}</span><span class="opt-type ${cls}">${tlbl}</span></div>
+      <div class="opt-ltp">${fmtR(c.ltp)}<span class="opt-chg ${up?'up':'dn'}">${pchS}</span></div>
+      <div class="opt-metrics">
+        <div>Volume<b>${optLakh(c.volume)}</b></div>
+        <div>OI<b>${optLakh(c.oi)}</b></div>
+      </div>
+    </div>`
+  }).join('')
+}
+
+function optMini(c){
+  if(!c) return '—'
+  const ce=optIsCE(c), cls=ce?'ce':'pe', tlbl=ce?'CE':'PE'
+  return `<span class="opt-mini"><b class="${cls}">${c.strike??'—'} ${tlbl}</b><br>${fmtR(c.ltp)} · ${optLakh(c.volume)}</span>`
+}
+
+function renderOptSeries(rows){
+  const tb=document.getElementById('opt-tb')
+  if(!rows.length){
+    tb.innerHTML='<tr><td colspan="6"><div class="empty"><div class="empty-icon">📜</div><div class="empty-text">No snapshots on this date</div></div></td></tr>'
+    return
+  }
+  tb.innerHTML=rows.map(r=>{
+    const c=r.contracts||[]
+    return `<tr>
+      <td style="color:var(--muted2)">${r.snap_time||'—'}</td>
+      <td style="color:var(--muted2)">${r.spot!=null?Number(r.spot).toLocaleString('en-IN',{minimumFractionDigits:1,maximumFractionDigits:1}):'—'}</td>
+      <td>${optMini(c[0])}</td><td>${optMini(c[1])}</td>
+      <td>${optMini(c[2])}</td><td>${optMini(c[3])}</td>
+    </tr>`
+  }).join('')
+}
+
+async function loadOptions(force){
+  if(!sb) return
+  const btn=document.getElementById('opt-refresh')
+  if(force&&btn){ btn.disabled=true; btn.textContent='⏳ Loading…' }
+  const d=document.getElementById('optd').value||today()
+  const {data}=await sb.from('options_snapshots').select('*')
+    .eq('snap_date',d).order('snap_ts',{ascending:false})
+  const rows=data||[]
+  const latest=rows[0]||null
+  renderOptCards(latest)
+  renderOptSeries(rows)
+  const meta=document.getElementById('opt-meta')
+  if(latest){
+    meta.textContent=`${rows.length} snapshots · latest ${latest.snap_time||''} · ${latest.underlying||''} `
+      +(latest.spot!=null?`spot ${Number(latest.spot).toLocaleString('en-IN')}`:'')
+      +(latest.data_ts?` · NSE ${latest.data_ts}`:'')
+  } else { meta.textContent='No data for this date' }
+  if(force&&btn){ btn.disabled=false; btn.textContent='🔄 Fetch latest' }
 }
 
 /* instrument selector buttons */
