@@ -147,6 +147,8 @@ state = {
     "options_flow":     {},     # keyed by symbol: NIFTY/BANKNIFTY/SENSEX
     "dom":              {},     # keyed by symbol
     "chain_hist":       {},     # keyed by symbol: recent chain snapshots (OI momentum)
+    "snap_last_run":    None,   # last options-snapshot run time (cadence gate)
+    "snap_close_date":  None,   # date the closing snapshot was captured
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -1640,11 +1642,37 @@ def format_options_snapshot(snap: dict) -> str:
         return ""
     return hdr + "".join(lines)
 
+def _snapshot_due():
+    """Cadence gate for the options snapshot (IST):
+      - pre-open 09:00-09:14  -> every 1 min
+      - session  09:15-15:30  -> every 3 min
+      - one closing snapshot just after 15:30
+      - idle otherwise / weekends"""
+    now = datetime.now(IST)
+    if now.weekday() >= 5:
+        return False
+    mins  = now.hour * 60 + now.minute
+    today = now.strftime("%Y-%m-%d")
+    PRE_S, PRE_E = 9 * 60 + 0,  9 * 60 + 14
+    SES_S, SES_E = 9 * 60 + 15, 15 * 60 + 30
+    if PRE_S <= mins <= PRE_E:                 # pre-open: every minute
+        return True
+    if SES_S <= mins <= SES_E:                 # session: ~every 3 min
+        last = state.get("snap_last_run")
+        return last is None or (now - last).total_seconds() >= 175
+    if mins > SES_E:                           # after close: one final snapshot
+        if state.get("snap_close_date") != today:
+            state["snap_close_date"] = today
+            return True
+    return False
+
 def options_snapshot_job():
-    """Fetch the top-4 most-active options by volume, alert Bot 2, and push
-    one timestamped row to Supabase. Runs every 3 min, all day (no market-hours
-    gate). NSE returns the last available snapshot outside session hours; the
-    no-data path is handled gracefully below."""
+    """Fetch the top-4 most-active options by volume, alert the scan bot, and push
+    one timestamped row to Supabase. Cadence set by _snapshot_due():
+    1-min in pre-open (09:00-09:14), 3-min in session, one snapshot at the close."""
+    if not _snapshot_due():
+        return
+    state["snap_last_run"] = datetime.now(IST)
     snap = fetch_options_snapshot(limit=20, top_n=4)
     if not snap.get("ok"):
         print("  [OPT SNAPSHOT] no data this cycle")
@@ -2215,8 +2243,9 @@ def main():
     # Schedule recurring scans; EOD detection is done inside the while loop
     schedule.every(SCAN_INTERVAL).minutes.do(scan)
 
-    # Top-4 most-active options snapshot → scan bot + Supabase, every 3 min
-    schedule.every(3).minutes.do(options_snapshot_job)
+    # Top-4 most-active options snapshot → scan bot + Supabase
+    # (1-min pre-open 09:00-09:14, 3-min session, one snapshot at 15:30 close)
+    schedule.every(1).minutes.do(options_snapshot_job)
 
     # Option-chain analysis (NIFTY/BANKNIFTY/FINNIFTY) → scan bot + Supabase, every 5 min
     schedule.every(5).minutes.do(chain_analysis_job)
