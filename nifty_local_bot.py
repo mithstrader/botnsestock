@@ -417,6 +417,38 @@ def _nse_session():
         except: pass
     return _nse_sess
 
+def _fetch_chain_v3(symbol: str):
+    """Fetch full option chain via NSE v3 endpoints (old option-chain-indices is dead).
+    Returns the 'records' dict (data/underlyingValue/expiryDates) for the NEAREST
+    expiry, or None on failure."""
+    sess = _nse_session()
+    try:
+        r = sess.get(
+            f"https://www.nseindia.com/api/option-chain-contract-info?symbol={symbol}",
+            timeout=12)
+        if r.status_code != 200:
+            print(f"  [CHAIN {symbol}] contract-info HTTP {r.status_code}")
+            return None
+        expiries = r.json().get("expiryDates", []) or []
+        if not expiries:
+            return None
+    except Exception as e:
+        print(f"  [CHAIN {symbol}] contract-info: {e}")
+        return None
+    nearest = expiries[0]
+    try:
+        r = sess.get(
+            f"https://www.nseindia.com/api/option-chain-v3"
+            f"?type=Indices&symbol={symbol}&expiry={nearest}",
+            timeout=15)
+        if r.status_code != 200:
+            print(f"  [CHAIN {symbol}] v3 HTTP {r.status_code}")
+            return None
+        return r.json().get("records", {}) or None
+    except Exception as e:
+        print(f"  [CHAIN {symbol}] v3: {e}")
+        return None
+
 def fetch_vix_pcr():
     vix_val = pcr_val = None
     try:
@@ -428,12 +460,11 @@ def fetch_vix_pcr():
     except Exception as e:
         print(f"  [VIX] {e}")
     try:
-        r = _nse_session().get(
-            "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY", timeout=15)
-        if r.status_code == 200:
-            data  = r.json()["records"]["data"]
-            ce_oi = sum(d["CE"]["openInterest"] for d in data if "CE" in d)
-            pe_oi = sum(d["PE"]["openInterest"] for d in data if "PE" in d)
+        recs = _fetch_chain_v3("NIFTY")
+        if recs:
+            data  = recs.get("data", []) or []
+            ce_oi = sum((d.get("CE") or {}).get("openInterest", 0) or 0 for d in data)
+            pe_oi = sum((d.get("PE") or {}).get("openInterest", 0) or 0 for d in data)
             pcr_val = round(pe_oi / ce_oi, 3) if ce_oi else None
     except Exception as e:
         print(f"  [PCR] {e}")
@@ -496,20 +527,11 @@ def fetch_options_flow(symbol: str = "NIFTY", ltp: float = None) -> dict:
     empty = {"max_pain": None, "atm_bias": None, "resistance": None,
              "support": None, "oi_change_bias": None, "atm_ce_oi": 0, "atm_pe_oi": 0}
     try:
-        r = _nse_session().get(
-            f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}",
-            timeout=15)
-        if r.status_code != 200:
+        js = _fetch_chain_v3(symbol)
+        if not js:
             return empty
-        js    = r.json()["records"]
-        expiries = js.get("expiryDates", [])
-        if not expiries:
-            return empty
-        nearest = expiries[0]
         strikes = {}
         for rec in js.get("data", []):
-            if rec.get("expiryDate") != nearest:
-                continue
             sp = rec.get("strikePrice", 0)
             strikes[sp] = {
                 "ce_oi":  rec.get("CE", {}).get("openInterest",          0),
@@ -1668,23 +1690,16 @@ def analyze_option_chain(symbol, strike_step, otm_steps=CHAIN_OTM_STEPS):
     support/resistance, most-active strikes and OTM strike suggestions."""
     empty = {"ok": False, "symbol": symbol}
     try:
-        r = _nse_session().get(
-            f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}",
-            timeout=15)
-        if r.status_code != 200:
-            print(f"  [CHAIN {symbol}] HTTP {r.status_code}")
+        recs = _fetch_chain_v3(symbol)
+        if not recs:
             return empty
-        recs     = r.json().get("records", {})
-        expiries = recs.get("expiryDates", [])
-        data     = recs.get("data", [])
-        spot     = recs.get("underlyingValue") or 0
-        if not expiries or not data or not spot:
+        data = recs.get("data", []) or []
+        spot = recs.get("underlyingValue") or 0
+        nearest = (recs.get("expiryDates") or [None])[0]
+        if not data or not spot:
             return empty
-        nearest = expiries[0]
         strikes = {}
         for rec in data:
-            if rec.get("expiryDate") != nearest:
-                continue
             sp = rec.get("strikePrice")
             ce = rec.get("CE", {}) or {}
             pe = rec.get("PE", {}) or {}
@@ -1694,15 +1709,15 @@ def analyze_option_chain(symbol, strike_step, otm_steps=CHAIN_OTM_STEPS):
                 "ce_vol": ce.get("totalTradedVolume", 0) or 0,
                 "ce_iv":  ce.get("impliedVolatility", 0) or 0,
                 "ce_ltp": ce.get("lastPrice", 0) or 0,
-                "ce_bid": ce.get("bidprice", 0) or 0,
-                "ce_ask": ce.get("askPrice", 0) or 0,
+                "ce_bid": ce.get("buyPrice1", 0) or 0,
+                "ce_ask": ce.get("sellPrice1", 0) or 0,
                 "pe_oi":  pe.get("openInterest", 0) or 0,
                 "pe_coi": pe.get("changeinOpenInterest", 0) or 0,
                 "pe_vol": pe.get("totalTradedVolume", 0) or 0,
                 "pe_iv":  pe.get("impliedVolatility", 0) or 0,
                 "pe_ltp": pe.get("lastPrice", 0) or 0,
-                "pe_bid": pe.get("bidprice", 0) or 0,
-                "pe_ask": pe.get("askPrice", 0) or 0,
+                "pe_bid": pe.get("buyPrice1", 0) or 0,
+                "pe_ask": pe.get("sellPrice1", 0) or 0,
             }
         if not strikes:
             return empty
