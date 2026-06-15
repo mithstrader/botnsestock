@@ -417,6 +417,8 @@ td{padding:10px 14px;white-space:nowrap;vertical-align:middle}
 .opt-h3{margin:0 0 10px;font-size:15px;color:var(--muted2)}
 .optg{color:var(--muted);font-size:11px;font-weight:700}
 .optgrp td{border-top:2px solid var(--border)}
+.opt-name{font-size:11px;color:var(--muted2);margin-top:3px}
+.opt-sub{font-size:10px;color:var(--muted)}
 .chain-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-bottom:8px}
 .chain-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius2);padding:16px 18px;border-top:3px solid var(--border)}
 .chain-card.bull{border-top-color:var(--call)}
@@ -1823,6 +1825,15 @@ function optLakh(n){
   return n.toLocaleString('en-IN')
 }
 function optIsCE(c){ return String(c.option_type||'').toLowerCase().startsWith('c') }
+function optName(c){
+  if(!c) return '—'
+  const t=optIsCE(c)?'CE':'PE'
+  return `${c.underlying||'NIFTY'} ${c.expiry?c.expiry+' ':''}${c.strike??'—'} ${t}`
+}
+function optSub(c){
+  if(!c) return ''
+  return `${c.underlying||'NIFTY'}${c.expiry?' · '+c.expiry:''}`
+}
 
 function renderOptCards(snap){
   const box=document.getElementById('opt-cards')
@@ -1838,6 +1849,7 @@ function renderOptCards(snap){
     return `<div class="opt-card ${cls}">
       <span class="opt-rank">#${i+1}</span>
       <div><span class="opt-strike">${c.strike??'—'}</span><span class="opt-type ${cls}">${tlbl}</span></div>
+      <div class="opt-name">${optSub(c)}</div>
       <div class="opt-ltp">${fmtR(c.ltp)}<span class="opt-chg ${up?'up':'dn'}">${pchS}</span></div>
       <div class="opt-metrics">
         <div>Volume<b>${optLakh(c.volume)}</b></div>
@@ -1850,7 +1862,7 @@ function renderOptCards(snap){
 function optMini(c){
   if(!c) return '—'
   const ce=optIsCE(c), cls=ce?'ce':'pe', tlbl=ce?'CE':'PE'
-  return `<span class="opt-mini"><b class="${cls}">${c.strike??'—'} ${tlbl}</b><br>${fmtR(c.ltp)}<br>V ${optLakh(c.volume)} · OI ${optLakh(c.oi)}</span>`
+  return `<span class="opt-mini"><b class="${cls}">${c.strike??'—'} ${tlbl}</b><br><span class="opt-sub">${optSub(c)}</span><br>${fmtR(c.ltp)}<br>V ${optLakh(c.volume)} · OI ${optLakh(c.oi)}</span>`
 }
 
 function renderOptSeries(rows){
@@ -1892,7 +1904,7 @@ function renderOptLeader(rows){
         const ce=optIsCE(c), cls=ce?'ce':'pe', tlbl=ce?'CE':'PE'
         const pch=c.pchange, up=(pch==null?true:pch>=0)
         const pchS=pch==null?'—':(up?'▲':'▼')+Math.abs(pch).toFixed(1)+'%'
-        html+=`<td><b class="opt-mini ${cls}">${c.strike??'—'} ${tlbl}</b></td>`
+        html+=`<td><b class="opt-mini ${cls}">${optName(c)}</b></td>`
             +`<td>${fmtR(c.ltp)}</td>`
             +`<td style="color:${up?'var(--call)':'var(--put)'};font-weight:700">${pchS}</td>`
             +`<td>${optLakh(c.volume)}</td>`
