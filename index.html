@@ -439,6 +439,14 @@ td{padding:10px 14px;white-space:nowrap;vertical-align:middle}
 .chain-pick.ce{color:var(--call)}.chain-pick.pe{color:var(--put)}
 .chain-pick small{font-weight:500;color:var(--muted2)}
 .chain-note{font-size:10.5px;color:var(--muted);margin-top:8px}
+.chain-early{margin-top:10px;padding:8px 10px;border-radius:8px;background:var(--surf2);border-left:3px solid var(--border)}
+.chain-early.bull{border-left-color:var(--call)}
+.chain-early.bear{border-left-color:var(--put)}
+.chain-early.range{border-left-color:#f59e0b}
+.chain-early-h{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700}
+.chain-early-dir{float:right;font-size:12px;font-weight:800}
+.chain-early-dir.bull{color:var(--call)}.chain-early-dir.bear{color:var(--put)}.chain-early-dir.range{color:#f59e0b}
+.chain-early-sub{font-size:11px;color:var(--muted2);margin-top:4px;clear:both}
 .opt-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius2);padding:16px 18px;position:relative;overflow:hidden}
 .opt-card.ce{border-left:3px solid var(--call)}
 .opt-card.pe{border-left:3px solid var(--put)}
@@ -1948,10 +1956,23 @@ function renderChain(rows){
       return `<div class="chain-pick ${cls}">${s.name || (s.strike+' '+s.type)} · ₹${s.ltp}
         <small>(Vol ${optLakh(s.vol)} · OI ${optLakh(s.oi)}${iv?' · '+iv:''}${sp?' · '+sp:''} · score ${s.score})</small></div>`
     }).join('')
+    const ed=r.early_direction||'NEUTRAL', es=r.early_strength||0
+    const ecls=dcls(ed), eico=ed==='BULLISH'?'🟢':ed==='BEARISH'?'🔴':'⚪'
+    const om=(r.oi_momentum||{}).bias||'—', bu=(r.buildup||{}).bias||'—', mi=(r.micro||{}).direction||'—'
+    const mc=r.micro||{}, mbits=[]
+    if(mc.thrust_pct!=null) mbits.push(`thrust ${mc.thrust_pct>0?'+':''}${mc.thrust_pct}%`)
+    if(mc.vol_delta_pct!=null) mbits.push(`VolΔ ${mc.vol_delta_pct>0?'+':''}${mc.vol_delta_pct}%`)
+    if(mc.dom_imb!=null) mbits.push(`DOM ${mc.dom_imb>0?'+':''}${mc.dom_imb}`)
+    const earlyHtml=`<div class="chain-early ${ecls}">
+        <span class="chain-early-h">⚡ EARLY (pre-move)</span>
+        <span class="chain-early-dir ${ecls}">${eico} ${ed} ${es}/3</span>
+        <div class="chain-early-sub">OI-mom <b>${om}</b> · Buildup <b>${bu}</b> · Micro <b>${mi}</b>${mbits.length?' · '+mbits.join(' · '):''}</div>
+      </div>`
     return `<div class="chain-card ${c}">
       <div class="chain-top"><span class="chain-sym">${r.symbol}</span>
         <span class="chain-dir ${c}">${dico(r.direction)} ${r.confidence||0}%</span></div>
       <div class="chain-spot">Spot ${r.spot!=null?Number(r.spot).toLocaleString('en-IN'):'—'} · ATM ${r.atm??'—'} · exp ${r.expiry||'—'} · ${r.scan_time||''}</div>
+      ${earlyHtml}
       <div class="chain-row"><span>PCR OI <b>${r.pcr_oi??'—'}</b> · Vol <b>${r.pcr_vol??'—'}</b></span><span>MaxPain <b>${r.max_pain!=null?Number(r.max_pain).toLocaleString('en-IN'):'—'}</b></span></div>
       <div class="chain-row"><span>🧱 Sup <b>${r.support??'—'}</b> · Res <b>${r.resistance??'—'}</b></span><span>🔥 CE <b>${r.ce_active??'—'}</b> · PE <b>${r.pe_active??'—'}</b></span></div>
       <div class="chain-sug">

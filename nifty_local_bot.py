@@ -146,6 +146,7 @@ state = {
     "last_fii_fetch":   None,
     "options_flow":     {},     # keyed by symbol: NIFTY/BANKNIFTY/SENSEX
     "dom":              {},     # keyed by symbol
+    "chain_hist":       {},     # keyed by symbol: recent chain snapshots (OI momentum)
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -1709,6 +1710,7 @@ def analyze_option_chain(symbol, strike_step, otm_steps=CHAIN_OTM_STEPS):
                 "ce_vol": ce.get("totalTradedVolume", 0) or 0,
                 "ce_iv":  ce.get("impliedVolatility", 0) or 0,
                 "ce_ltp": ce.get("lastPrice", 0) or 0,
+                "ce_chg": ce.get("pChange", 0) or 0,
                 "ce_bid": ce.get("buyPrice1", 0) or 0,
                 "ce_ask": ce.get("sellPrice1", 0) or 0,
                 "pe_oi":  pe.get("openInterest", 0) or 0,
@@ -1716,6 +1718,7 @@ def analyze_option_chain(symbol, strike_step, otm_steps=CHAIN_OTM_STEPS):
                 "pe_vol": pe.get("totalTradedVolume", 0) or 0,
                 "pe_iv":  pe.get("impliedVolatility", 0) or 0,
                 "pe_ltp": pe.get("lastPrice", 0) or 0,
+                "pe_chg": pe.get("pChange", 0) or 0,
                 "pe_bid": pe.get("buyPrice1", 0) or 0,
                 "pe_ask": pe.get("sellPrice1", 0) or 0,
             }
@@ -1783,6 +1786,52 @@ def analyze_option_chain(symbol, strike_step, otm_steps=CHAIN_OTM_STEPS):
                     suggestions.append(pk)
         suggestions = sorted(suggestions, key=lambda x: x["score"], reverse=True)[:2]
 
+        # ── OI-shift momentum vs recent snapshots (leading bias) ──────
+        snap = {"pcr_oi": pcr_oi, "max_pain": max_pain, "support": support,
+                "resistance": resistance, "spot": float(spot), "atm": atm}
+        hist = state.setdefault("chain_hist", {}).setdefault(symbol, [])
+        prev = hist[-1] if hist else None
+        mb = mr = 0; mnotes = []
+        if prev:
+            if max_pain and prev.get("max_pain"):
+                if   max_pain > prev["max_pain"]: mb += 1; mnotes.append(f"MaxPain \u2191 {prev['max_pain']:.0f}\u2192{max_pain:.0f}")
+                elif max_pain < prev["max_pain"]: mr += 1; mnotes.append(f"MaxPain \u2193 {prev['max_pain']:.0f}\u2192{max_pain:.0f}")
+            if pcr_oi is not None and prev.get("pcr_oi") is not None:
+                if   pcr_oi > prev["pcr_oi"] + 0.03: mb += 1; mnotes.append(f"PCR \u2191 {prev['pcr_oi']}\u2192{pcr_oi}")
+                elif pcr_oi < prev["pcr_oi"] - 0.03: mr += 1; mnotes.append(f"PCR \u2193 {prev['pcr_oi']}\u2192{pcr_oi}")
+            if support and prev.get("support"):
+                if   support > prev["support"]: mb += 1; mnotes.append(f"Support \u2191 {prev['support']}\u2192{support}")
+                elif support < prev["support"]: mr += 1; mnotes.append(f"Support \u2193 {prev['support']}\u2192{support}")
+            if resistance and prev.get("resistance"):
+                if   resistance > prev["resistance"]: mb += 1; mnotes.append(f"Resistance \u2191 {prev['resistance']}\u2192{resistance}")
+                elif resistance < prev["resistance"]: mr += 1; mnotes.append(f"Resistance \u2193 {prev['resistance']}\u2192{resistance}")
+        hist.append(snap); del hist[:-4]
+        mom_bias = "BULLISH" if mb > mr else "BEARISH" if mr > mb else "NEUTRAL"
+        oi_momentum = {"bias": mom_bias, "bull": mb, "bear": mr,
+                       "notes": mnotes, "have_prev": bool(prev)}
+
+        # ── Price + OI buildup matrix near ATM (leading) ─────────────
+        def _bstate(pchg, oichg):
+            if pchg > 0 and oichg > 0: return "LONG_BUILDUP"
+            if pchg < 0 and oichg > 0: return "SHORT_BUILDUP"
+            if pchg > 0 and oichg < 0: return "SHORT_COVERING"
+            if pchg < 0 and oichg < 0: return "LONG_UNWINDING"
+            return "FLAT"
+        _bvote = {("CE","LONG_BUILDUP"):1.0,("CE","SHORT_COVERING"):1.0,
+                  ("CE","SHORT_BUILDUP"):-1.0,("CE","LONG_UNWINDING"):-0.5,
+                  ("PE","SHORT_BUILDUP"):1.0,("PE","LONG_UNWINDING"):0.5,
+                  ("PE","LONG_BUILDUP"):-1.0,("PE","SHORT_COVERING"):-0.5}
+        bu_score = 0.0; bu_rows = []
+        for _i in range(-2, 3):
+            _sp = atm + _i * strike_step
+            _d = strikes.get(_sp)
+            if not _d: continue
+            _cs = _bstate(_d["ce_chg"], _d["ce_coi"]); _ps = _bstate(_d["pe_chg"], _d["pe_coi"])
+            bu_score += _bvote.get(("CE", _cs), 0) + _bvote.get(("PE", _ps), 0)
+            bu_rows.append({"strike": _sp, "ce": _cs, "pe": _ps})
+        bu_bias = "BULLISH" if bu_score > 0.5 else "BEARISH" if bu_score < -0.5 else "NEUTRAL"
+        buildup = {"bias": bu_bias, "score": round(bu_score, 1), "rows": bu_rows}
+
         return {
             "ok": True, "symbol": symbol, "spot": round(float(spot), 2),
             "expiry": nearest, "atm": atm,
@@ -1791,10 +1840,62 @@ def analyze_option_chain(symbol, strike_step, otm_steps=CHAIN_OTM_STEPS):
             "ce_active": ce_active, "pe_active": pe_active,
             "direction": direction, "confidence": confidence,
             "reasons": reasons, "suggestions": suggestions,
+            "oi_momentum": oi_momentum, "buildup": buildup,
         }
     except Exception as e:
         print(f"  [CHAIN {symbol}] {e}")
         return empty
+
+CHAIN_TICKER = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK", "FINNIFTY": "^CNXFIN"}
+
+def micro_signal(symbol):
+    """Microstructure pre-move read: 1-min price thrust + volume delta + DOM imbalance.
+    Best-effort \u2014 returns NEUTRAL if feeds are unavailable."""
+    out = {"ok": False, "direction": "NEUTRAL", "thrust_pct": None,
+           "vol_delta_pct": None, "dom_imb": None, "reasons": []}
+    bull = bear = 0
+    tk = CHAIN_TICKER.get(symbol)
+    if tk:
+        try:
+            df1 = fetch_1min_ohlcv(tk)
+            if df1 is not None and len(df1) >= 3:
+                recent = df1.tail(5)
+                c0 = float(recent["Close"].iloc[-1]); cp = float(recent["Close"].iloc[-2])
+                thrust = (c0 - cp) / cp * 100 if cp else 0
+                out["thrust_pct"] = round(thrust, 2)
+                if   thrust >  0.05: bull += 1; out["reasons"].append(f"1m thrust +{thrust:.2f}%")
+                elif thrust < -0.05: bear += 1; out["reasons"].append(f"1m thrust {thrust:.2f}%")
+                vd = calc_volume_delta(recent)
+                out["vol_delta_pct"] = vd.get("delta_pct")
+                if   vd.get("bias") == "BULL": bull += 1; out["reasons"].append(f"Vol\u0394 {vd['delta_pct']:+.0f}% buy")
+                elif vd.get("bias") == "BEAR": bear += 1; out["reasons"].append(f"Vol\u0394 {vd['delta_pct']:+.0f}% sell")
+                out["ok"] = True
+        except Exception as e:
+            print(f"  [MICRO {symbol}] 1min: {e}")
+    try:
+        dom = fetch_dom_imbalance(symbol)
+        imb = dom.get("imbalance")
+        if imb is not None:
+            out["dom_imb"] = imb
+            if   imb >  0.05: bull += 1; out["reasons"].append(f"DOM {imb:+.2f} bid")
+            elif imb < -0.05: bear += 1; out["reasons"].append(f"DOM {imb:+.2f} ask")
+            out["ok"] = True
+    except Exception as e:
+        print(f"  [MICRO {symbol}] dom: {e}")
+    out["bull"] = bull; out["bear"] = bear
+    out["direction"] = "BULLISH" if bull > bear else "BEARISH" if bear > bull else "NEUTRAL"
+    return out
+
+def _early_read(a, micro):
+    """Combine OI-momentum + buildup + microstructure into a pre-move bias (0-3 agree)."""
+    votes = {"BULLISH": 0, "BEARISH": 0}
+    for src in ((a.get("oi_momentum") or {}).get("bias"),
+                (a.get("buildup") or {}).get("bias"),
+                (micro or {}).get("direction")):
+        if src in votes: votes[src] += 1
+    if   votes["BULLISH"] > votes["BEARISH"]: return {"direction": "BULLISH", "strength": votes["BULLISH"]}
+    elif votes["BEARISH"] > votes["BULLISH"]: return {"direction": "BEARISH", "strength": votes["BEARISH"]}
+    return {"direction": "NEUTRAL", "strength": 0}
 
 def format_chain_analysis(a):
     """Telegram message for one index chain read (scan bot)."""
@@ -1813,6 +1914,20 @@ def format_chain_analysis(a):
     ]
     if a["reasons"]:
         lines.append("  • " + "\n  • ".join(a["reasons"]))
+    early = a.get("early") or {}
+    if early:
+        om = a.get("oi_momentum") or {}; bu = a.get("buildup") or {}; mic = a.get("micro") or {}
+        ed = early.get("direction", "NEUTRAL"); es = early.get("strength", 0)
+        eico = {"BULLISH": "\U0001F7E2", "BEARISH": "\U0001F534", "NEUTRAL": "\u26AA"}.get(ed, "\u26AA")
+        lines.append(f"\u26A1 *EARLY (pre-move): {eico} {ed}* ({es}/3 agree)")
+        _dash = "\u2014"
+        lines.append(f"  OI-mom {om.get('bias', _dash)} | Buildup {bu.get('bias', _dash)} | Micro {mic.get('direction', _dash)}")
+        mp = []
+        if mic.get("thrust_pct") is not None: mp.append(f"thrust {mic['thrust_pct']:+.2f}%")
+        if mic.get("vol_delta_pct") is not None: mp.append(f"Vol\u0394 {mic['vol_delta_pct']:+.0f}%")
+        if mic.get("dom_imb") is not None: mp.append(f"DOM {mic['dom_imb']:+.2f}")
+        if mp: lines.append("  " + " | ".join(mp))
+
     sug = a.get("suggestions") or []
     if sug:
         lines.append("🎯 *Suggested OTM (momentum):*")
@@ -1854,6 +1969,11 @@ def sb_push_chain_analysis(a):
             "confidence": a["confidence"],
             "reasons":    a.get("reasons", []),
             "suggestions": a.get("suggestions", []),
+            "oi_momentum": a.get("oi_momentum"),
+            "buildup":     a.get("buildup"),
+            "micro":       a.get("micro"),
+            "early_direction": (a.get("early") or {}).get("direction"),
+            "early_strength":  (a.get("early") or {}).get("strength"),
         }).execute()
     except Exception as e:
         print(f"  [SUPABASE] push_chain_analysis error: {e}")
@@ -1868,6 +1988,9 @@ def chain_analysis_job():
         if not a.get("ok"):
             print(f"  [CHAIN {sym}] no data this cycle")
             continue
+        micro = micro_signal(sym)
+        a["micro"] = micro
+        a["early"] = _early_read(a, micro)
         msg = format_chain_analysis(a)
         if msg:
             send_scan_tg(msg)
