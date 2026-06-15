@@ -485,6 +485,7 @@ td{padding:10px 14px;white-space:nowrap;vertical-align:middle}
 .act-bar{display:inline-flex;align-items:center;gap:6px;font-size:12px}
 .act-track{width:50px;height:5px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden}
 .act-fill{height:100%;border-radius:3px;transition:width .4s ease}
+.rfsel{background:var(--surf2);color:var(--muted2);border:1px solid var(--border);border-radius:8px;padding:4px 8px;font-size:12px;font-weight:700;cursor:pointer}
 
 /* ── Animations ─────────────────────────────────────────────────── */
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
@@ -524,17 +525,23 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
     <span class="vpill">PCR <span id="hd-pcr">—</span></span>
     <span class="vpill">Scans <span id="hd-sc">—</span></span>
     <span class="vpill">Signals <span id="hd-al">—</span></span>
+    <select id="refreshSel" class="rfsel" title="Auto-refresh page">
+      <option value="0">⟳ Off</option>
+      <option value="60">⟳ 1 min</option>
+      <option value="120">⟳ 2 min</option>
+      <option value="300">⟳ 5 min</option>
+    </select>
     <span class="lupd" id="lupd"></span>
   </div>
 </header>
 
 <div class="tabs">
-  <button class="tbtn active" data-tab="live">📡 Live</button>
+  <button class="tbtn" data-tab="live">📡 Live</button>
   <button class="tbtn" data-tab="stocks">📈 Stocks</button>
   <button class="tbtn" data-tab="signals">📢 Signals</button>
   <button class="tbtn" data-tab="analytics">📊 Analytics</button>
   <button class="tbtn" data-tab="footprint">🦶 Footprint</button>
-  <button class="tbtn" data-tab="options">🔊 Options</button>
+  <button class="tbtn active" data-tab="options">🔊 Options</button>
   <button class="tbtn" data-tab="scanlog">🔍 Scan Log</button>
 </div>
 
@@ -549,7 +556,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 </div>
 
 <!-- ══════ LIVE ════════════════════════════════════════════════════ -->
-<div id="p-live" class="panel active">
+<div id="p-live" class="panel">
 
   <!-- Bot Status Banner -->
   <div id="bot-banner" class="bot-banner connecting">
@@ -790,7 +797,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 </div>
 
 <!-- ══════ OPTIONS (most active by volume) ════════════════════════ -->
-<div id="p-options" class="panel">
+<div id="p-options" class="panel active">
   <div class="frow">
     <button class="btn pri" id="opt-refresh" onclick="loadOptions(true)">🔄 Fetch latest</button>
     <input type="date" id="optd">
@@ -2006,8 +2013,25 @@ async function loadTodaySigs(){
   renderLatest(data||[])
 }
 
+function applyRefresh(sec){
+  if(window._rfTimer){ clearInterval(window._rfTimer); window._rfTimer=null }
+  if(sec>0){ window._rfTimer=setInterval(()=>location.reload(), sec*1000) }
+  try{ localStorage.setItem('rfSec', String(sec)) }catch(e){}
+}
+function initRefresh(){
+  const sel=document.getElementById('refreshSel')
+  if(!sel) return
+  let sec=0
+  try{ sec=parseInt(localStorage.getItem('rfSec')||'0',10)||0 }catch(e){}
+  sel.value=String(sec)
+  sel.addEventListener('change',()=>applyRefresh(parseInt(sel.value,10)||0))
+  applyRefresh(sec)
+}
+
 async function boot(){
   updateMarketStatus()
+  initRefresh()
+  loadOptions()
   setInterval(updateMarketStatus, 60000)
   // Refresh "X min ago" sub-text every 60s without hitting DB
   setInterval(_updateBannerSub, 60000)
