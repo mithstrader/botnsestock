@@ -1926,7 +1926,7 @@ function renderChain(rows){
       const cls=s.type==='CE'?'ce':'pe'
       const sp=s.spread_pct!=null?`spr ${s.spread_pct}%`:''
       const iv=s.iv!=null?`IV ${s.iv}`:''
-      return `<div class="chain-pick ${cls}">${s.strike} ${s.type} · ₹${s.ltp}
+      return `<div class="chain-pick ${cls}">${s.name || (s.strike+' '+s.type)} · ₹${s.ltp}
         <small>(Vol ${optLakh(s.vol)} · OI ${optLakh(s.oi)}${iv?' · '+iv:''}${sp?' · '+sp:''} · score ${s.score})</small></div>`
     }).join('')
     return `<div class="chain-card ${c}">

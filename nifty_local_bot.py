@@ -1756,12 +1756,16 @@ def analyze_option_chain(symbol, strike_step, otm_steps=CHAIN_OTM_STEPS):
             for i in range(1, otm_steps + 1):
                 sp = atm + i * strike_step
                 if sp in strikes:
-                    suggestions.append(_strike_pick(sp, "CE", strikes[sp]))
+                    pk = _strike_pick(sp, "CE", strikes[sp])
+                    pk["name"] = f"{symbol} {nearest} {sp} CE"
+                    suggestions.append(pk)
         elif direction == "BEARISH":
             for i in range(1, otm_steps + 1):
                 sp = atm - i * strike_step
                 if sp in strikes:
-                    suggestions.append(_strike_pick(sp, "PE", strikes[sp]))
+                    pk = _strike_pick(sp, "PE", strikes[sp])
+                    pk["name"] = f"{symbol} {nearest} {sp} PE"
+                    suggestions.append(pk)
         suggestions = sorted(suggestions, key=lambda x: x["score"], reverse=True)[:2]
 
         return {
@@ -1800,8 +1804,9 @@ def format_chain_analysis(a):
         for s in sug:
             sp_s = f"{s['spread_pct']}%" if s["spread_pct"] is not None else "—"
             iv_s = f"{s['iv']}" if s["iv"] is not None else "—"
+            nm = s.get("name", f"{s['strike']} {s['type']}")
             lines.append(
-                f"  {s['strike']} {s['type']}  ₹{s['ltp']}  "
+                f"  *{nm}*  ₹{s['ltp']}  "
                 f"(Vol {s['vol']:,} · OI {s['oi']:,} · IV {iv_s} · spr {sp_s} · score {s['score']})")
     else:
         lines.append("🎯 No directional OTM pick (range / thin data)")
